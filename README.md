@@ -1,4 +1,4 @@
-# Grove — isolated workspaces for every branch
+# Grove — make work trees as easy as a walk in the woods
 
 ![Grove Banner](assets/grove-banner.png)
 
