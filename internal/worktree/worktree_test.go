@@ -391,6 +391,41 @@ func TestManager_Remove(t *testing.T) {
 			t.Errorf("expected 'uncommitted changes' in error, got: %v", err)
 		}
 	})
+
+	t.Run("does not delete branch when no worktree matches", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("worktree remove --force /worktrees/feat-missing", "", fmt.Errorf("git worktree remove: /worktrees/feat-missing is not a working tree"))
+		git.On("worktree list --porcelain",
+			"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		_, err := mgr.Remove("feat/missing", true, true)
+		if err == nil {
+			t.Fatal("expected error when no matching worktree exists")
+		}
+		if git.wasCalled("branch -D -- feat/missing") {
+			t.Error("branch should not be deleted when no worktree matches")
+		}
+	})
+
+	t.Run("deletes branch when stale worktree metadata still exists", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("worktree remove --force /worktrees/feat-ghost", "", fmt.Errorf("git worktree remove: /worktrees/feat-ghost is not a working tree"))
+		git.On("worktree list --porcelain",
+			"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
+				"worktree /worktrees/feat-ghost\nHEAD def\nbranch refs/heads/feat/ghost\n", nil)
+		git.On("worktree prune", "", nil)
+		git.On("branch -D -- feat/ghost", "", nil)
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		result, err := mgr.Remove("feat/ghost", true, true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !result.BranchDeleted {
+			t.Error("expected branch deletion after ghost cleanup")
+		}
+	})
 }
 
 func TestManager_List(t *testing.T) {

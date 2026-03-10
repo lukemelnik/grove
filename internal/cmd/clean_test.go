@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,61 @@ func TestCleanCmd_ForceClean(t *testing.T) {
 	gitCmd.Dir = repoDir
 	if _, err := gitCmd.CombinedOutput(); err == nil {
 		t.Error("branch feat/to-clean should have been deleted")
+	}
+}
+
+func TestCleanCmd_PreservesDirtyWorktreeWithoutForce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitRun(t, repoDir, "branch", "feat/dirty-clean")
+	wtPath := filepath.Join(worktreeDir, "feat-dirty-clean")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/dirty-clean")
+
+	dirtyFile := filepath.Join(wtPath, "README.md")
+	if err := os.WriteFile(dirtyFile, []byte("# Dirty change\n"), 0644); err != nil {
+		t.Fatalf("failed to dirty worktree: %v", err)
+	}
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	origStdin := stdinReader
+	stdinReader = strings.NewReader("y\n")
+	t.Cleanup(func() { stdinReader = origStdin })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("clean failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Warning: could not remove worktree for feat/dirty-clean") {
+		t.Errorf("expected warning about dirty worktree, got:\n%s", output)
+	}
+	if strings.Contains(output, "Cleaned feat/dirty-clean") {
+		t.Errorf("dirty worktree should not be cleaned without --force, got:\n%s", output)
+	}
+
+	gitCmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feat/dirty-clean")
+	gitCmd.Dir = repoDir
+	if _, err := gitCmd.CombinedOutput(); err != nil {
+		t.Error("branch feat/dirty-clean should still exist")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("worktree path should still exist: %v", err)
 	}
 }
 

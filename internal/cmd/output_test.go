@@ -83,8 +83,14 @@ func TestOutputError_JSONMode(t *testing.T) {
 	testErr := errors.New("something went wrong")
 	retErr := outputError(listCmd, testErr)
 
-	if retErr != testErr {
-		t.Errorf("expected original error returned, got %v", retErr)
+	if retErr == nil {
+		t.Fatal("expected non-nil error in JSON mode")
+	}
+	if !ErrorAlreadyReported(retErr) {
+		t.Errorf("expected structured error marker, got %v", retErr)
+	}
+	if !errors.Is(retErr, testErr) {
+		t.Errorf("expected returned error to wrap original error, got %v", retErr)
 	}
 
 	stderr := errBuf.String()
@@ -116,6 +122,9 @@ func TestOutputError_HumanMode(t *testing.T) {
 
 	if retErr != testErr {
 		t.Errorf("expected original error returned, got %v", retErr)
+	}
+	if ErrorAlreadyReported(retErr) {
+		t.Errorf("did not expect structured error marker in human mode, got %v", retErr)
 	}
 
 	if errBuf.Len() != 0 {

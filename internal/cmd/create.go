@@ -57,25 +57,31 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	envOverrides, _ := cmd.Flags().GetStringArray("env")
 	fromRef, _ := cmd.Flags().GetString("from")
 	noTmux, _ := cmd.Flags().GetBool("no-tmux")
-	jsonOutput, _ := cmd.Flags().GetBool("json")
+	explicitJSON, _ := cmd.Flags().GetBool("json")
+	jsonOutput := shouldOutputJSON(cmd)
 	includeAll, _ := cmd.Flags().GetBool("all")
 	includeWith, _ := cmd.Flags().GetStringArray("with")
 	attach, _ := cmd.Flags().GetBool("attach")
+	if jsonOutput && !explicitJSON && !cmd.Flags().Changed("attach") {
+		// In auto-JSON mode we are typically being driven by another program, so
+		// set up tmux but avoid switching the caller into an interactive session.
+		attach = false
+	}
 
 	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
 	}
 
 	configPath, projectRoot, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	// Step 2: Hash branch -> assign ports
@@ -83,7 +89,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	if len(cfg.Services) > 0 {
 		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset)
 		if err != nil {
-			return fmt.Errorf("assigning ports: %w", err)
+			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
 		}
 	} else {
 		portAssignment = &ports.Assignment{Ports: map[string]int{}}
@@ -92,12 +98,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// Step 3: Resolve environment variables
 	overrides, err := env.ParseOverrides(envOverrides)
 	if err != nil {
-		return fmt.Errorf("parsing env overrides: %w", err)
+		return outputError(cmd, fmt.Errorf("parsing env overrides: %w", err))
 	}
 
 	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot, overrides)
 	if err != nil {
-		return fmt.Errorf("resolving environment: %w", err)
+		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
 	}
 
 	// Step 4: Create worktree with branch resolution
@@ -106,17 +112,17 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {
-		return fmt.Errorf("creating worktree: %w", err)
+		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
 	}
 
-	// Step 5: Output results (always print info for text/json mode)
+	// Step 5: Output worktree details before attach so interactive users still
+	// see the workspace info before tmux takes over.
 	if jsonOutput {
-		return outputJSON(cmd, result, portAssignment.Ports, resolvedEnv)
-	}
-
-	// Print worktree info
-	if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg, overrides); err != nil {
-		return err
+		if err := outputJSON(cmd, result, portAssignment.Ports, resolvedEnv); err != nil {
+			return outputError(cmd, err)
+		}
+	} else if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg, overrides); err != nil {
+		return outputError(cmd, err)
 	}
 
 	// Step 6: Tmux workspace setup (default to empty config if not specified)
@@ -142,10 +148,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 			Attach:       attach,
 		}
 		if err := tmuxMgr.Create(tmuxOpts); err != nil {
-			return fmt.Errorf("setting up tmux workspace: %w", err)
+			return outputError(cmd, fmt.Errorf("setting up tmux workspace: %w", err))
 		}
 	} else {
-		fmt.Fprintf(cmd.OutOrStdout(), "\n  cd %s\n", result.Path)
+		if !jsonOutput {
+			fmt.Fprintf(cmd.OutOrStdout(), "\n  cd %s\n", result.Path)
+		}
 	}
 
 	return nil
