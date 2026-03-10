@@ -36,22 +36,22 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, args []string) error {
-	jsonOutput, _ := cmd.Flags().GetBool("json")
+	jsonOutput := shouldOutputJSON(cmd)
 
 	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
 	}
 
 	configPath, projectRoot, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	// Step 2: Detect current worktree from cwd
@@ -60,15 +60,15 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	wtInfo, err := wtMgr.FindByPath(cwd)
 	if err != nil {
-		return fmt.Errorf("not inside a grove worktree: %w", err)
+		return outputError(cmd, fmt.Errorf("not inside a grove worktree: %w", err))
 	}
 
 	// Step 3: Compute ports for this branch
 	var assignedPorts map[string]int
 	if len(cfg.Services) > 0 {
-		assignment, err := ports.Assign(cfg.Services, wtInfo.Branch, ports.DefaultMaxOffset, func(int) bool { return true })
+		assignment, err := ports.Assign(cfg.Services, wtInfo.Branch, ports.DefaultMaxOffset)
 		if err != nil {
-			return fmt.Errorf("assigning ports: %w", err)
+			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
 		}
 		assignedPorts = assignment.Ports
 	} else {
@@ -78,7 +78,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Step 4: Resolve environment variables
 	resolvedEnv, err := env.Resolve(cfg, assignedPorts, projectRoot, nil)
 	if err != nil {
-		return fmt.Errorf("resolving environment: %w", err)
+		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
 	}
 
 	// Step 5: Output
@@ -91,7 +91,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		}
 		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
-			return fmt.Errorf("marshaling JSON: %w", err)
+			return outputError(cmd, fmt.Errorf("marshaling JSON: %w", err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(data))
 		return nil

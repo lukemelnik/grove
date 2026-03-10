@@ -34,22 +34,22 @@ func newListCmd() *cobra.Command {
 }
 
 func runList(cmd *cobra.Command, args []string) error {
-	jsonOutput, _ := cmd.Flags().GetBool("json")
+	jsonOutput := shouldOutputJSON(cmd)
 
 	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
 	}
 
 	configPath, projectRoot, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return err
+		return outputError(cmd, err)
 	}
 
 	// Step 2: List worktrees
@@ -58,7 +58,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	worktrees, err := wtMgr.List()
 	if err != nil {
-		return fmt.Errorf("listing worktrees: %w", err)
+		return outputError(cmd, fmt.Errorf("listing worktrees: %w", err))
 	}
 
 	// Step 3: Compute ports for each worktree and build entries
@@ -76,8 +76,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		if len(cfg.Services) > 0 {
-			// Use a port checker that always returns true (we just want deterministic assignment, not availability)
-			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset, func(int) bool { return true })
+			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset)
 			if err == nil {
 				entry.Ports = assignment.Ports
 			}
@@ -95,7 +94,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	if jsonOutput {
 		data, err := json.MarshalIndent(entries, "", "  ")
 		if err != nil {
-			return fmt.Errorf("marshaling JSON: %w", err)
+			return outputError(cmd, fmt.Errorf("marshaling JSON: %w", err))
 		}
 		fmt.Fprintln(cmd.OutOrStdout(), string(data))
 		return nil

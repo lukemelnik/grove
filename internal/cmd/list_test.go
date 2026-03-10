@@ -27,6 +27,10 @@ services:
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
 
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
+
 	rootCmd := NewRootCmd()
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
@@ -82,6 +86,10 @@ services:
 	origGetWd := getWorkingDir
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
+
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
 
 	rootCmd := NewRootCmd()
 	var buf bytes.Buffer

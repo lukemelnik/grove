@@ -47,6 +47,10 @@ env:
 	getWorkingDir = func() (string, error) { return wtPath, nil }
 	defer func() { getWorkingDir = origGetWd }()
 
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
+
 	// We need .grove.yml discoverable from inside the worktree.
 	// The worktree is a sibling directory; config discovery walks up.
 	// Copy .grove.yml into the worktree for discoverability.
@@ -207,6 +211,10 @@ services:
 	origGetWd := getWorkingDir
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
+
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
 
 	rootCmd := NewRootCmd()
 	var buf bytes.Buffer
