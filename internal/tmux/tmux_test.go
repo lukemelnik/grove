@@ -2,7 +2,6 @@ package tmux
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -1208,24 +1207,78 @@ func TestCreate_Tier3_SizeOnSplit(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Find the vertical split command with -p flag for claude's size
+	// The vertical container gets a horizontal split-window (from parent direction "h").
+	// Inside the container, claude is the first child and reuses the pane from the
+	// container's split (no split-window created for it). pnpm dev is split off
+	// vertically. Since pnpm dev has no Size, no -p flag is generated for it.
+	// Note: claude's Size "60%" only applies if a split-window is created for it;
+	// since it reuses the existing pane, the size is not used here.
+	splits := runner.findAllCommands("split-window")
+	if len(splits) != 2 {
+		t.Fatalf("expected 2 split-window commands, got %d:\n%s", len(splits), runner.commandString())
+	}
+
+	// Verify all 3 commands were sent
+	sendKeys := runner.findAllCommands("send-keys")
+	if len(sendKeys) != 3 {
+		t.Errorf("expected 3 send-keys, got %d:\n%s", len(sendKeys), runner.commandString())
+	}
+
+	// Verify the second split (pnpm dev) uses -v (vertical direction from the container)
+	foundVerticalSplit := false
+	for _, split := range splits {
+		for _, arg := range split {
+			if arg == "-v" {
+				foundVerticalSplit = true
+			}
+		}
+	}
+	if !foundVerticalSplit {
+		t.Errorf("expected a vertical split (-v) for the nested container:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_Tier3_SizeOnNonFirstPane(t *testing.T) {
+	runner := newMockRunner()
+	mgr := NewManager(runner)
+
+	// Tier 3 with a size on a non-first pane that gets its own split-window.
+	// nvim is first (uses existing pane), claude gets split off with -p 40.
+	opts := Options{
+		Branch:       "test-branch",
+		WorktreePath: "/work",
+		Env:          map[string]string{},
+		TmuxConfig: &config.TmuxConfig{
+			Mode: "session",
+			Panes: []config.Pane{
+				{Cmd: "nvim"},
+				{Split: "vertical", Panes: []config.Pane{
+					{Cmd: "claude"},
+					{Cmd: "pnpm dev", Size: "40%"},
+				}},
+			},
+		},
+		Attach: false,
+	}
+
+	err := mgr.Create(opts)
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	// Find the split-window command that has the -p flag
 	splits := runner.findAllCommands("split-window")
 	foundSizeFlag := false
 	for _, split := range splits {
 		for i, arg := range split {
-			if arg == "-p" && i+1 < len(split) {
-				pct, _ := strconv.Atoi(split[i+1])
-				if pct == 60 {
-					foundSizeFlag = true
-				}
+			if arg == "-p" && i+1 < len(split) && split[i+1] == "40" {
+				foundSizeFlag = true
 			}
 		}
 	}
-	// Note: The size on the first split within a vertical container
-	// should result in a -p flag on the second pane's split-window
-	// Actually, the first pane in a container doesn't split (it's the existing pane).
-	// The size on subsequent panes should be applied.
-	_ = foundSizeFlag
+	if !foundSizeFlag {
+		t.Errorf("expected a split-window with -p 40 for pnpm dev:\n%s", runner.commandString())
+	}
 }
 
 func TestSortedKeys(t *testing.T) {

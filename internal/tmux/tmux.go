@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -142,6 +143,10 @@ func (m *Manager) Create(opts Options) error {
 		mode = "window"
 	}
 
+	// parentSession tracks the parent session name when in window mode,
+	// so we can set environment variables on it without querying tmux twice.
+	var parentSession string
+
 	// Step 1: Create session or window
 	switch mode {
 	case "session":
@@ -158,6 +163,7 @@ func (m *Manager) Create(opts Options) error {
 			mode = "session"
 			break
 		}
+		parentSession = session
 		if err := m.createWindow(session, name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
 		}
@@ -168,8 +174,7 @@ func (m *Manager) Create(opts Options) error {
 	sessionTarget := name
 	if mode == "window" {
 		// For window mode, env is set on the parent session.
-		session, _ := m.currentSession()
-		sessionTarget = session
+		sessionTarget = parentSession
 	}
 	if err := m.injectEnv(sessionTarget, opts.Env); err != nil {
 		return fmt.Errorf("injecting environment: %w", err)
@@ -308,14 +313,9 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 		}
 	}
 
-	// Tier 2: set main pane size before applying layout
+	// Tier 2: set main pane size before applying layout.
+	// tmux accepts percentage strings (e.g. "70%") directly for these options.
 	if mainSize != "" {
-		sizeVal := mainSize
-		// Convert percentage to a number for tmux option
-		if strings.HasSuffix(sizeVal, "%") {
-			sizeVal = sizeVal // tmux accepts percentage strings with % for these options
-		}
-
 		if layout == "main-vertical" || layout == "main-horizontal" {
 			var optionName string
 			if layout == "main-vertical" {
@@ -323,7 +323,7 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 			} else {
 				optionName = "main-pane-height"
 			}
-			_, err := m.runner.Run("set-option", "-t", target, optionName, sizeVal)
+			_, err := m.runner.Run("set-option", "-t", target, optionName, mainSize)
 			if err != nil {
 				return fmt.Errorf("setting %s: %w", optionName, err)
 			}
@@ -549,16 +549,6 @@ func sortedKeys(m map[string]string) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// Sort for deterministic output
-	sortStrings(keys)
+	sort.Strings(keys)
 	return keys
-}
-
-// sortStrings sorts a string slice in place.
-func sortStrings(s []string) {
-	for i := 1; i < len(s); i++ {
-		for j := i; j > 0 && s[j] < s[j-1]; j-- {
-			s[j], s[j-1] = s[j-1], s[j]
-		}
-	}
 }
