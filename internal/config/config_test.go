@@ -490,3 +490,190 @@ tmux:
 		t.Fatalf("expected 1 pane, got %d", len(cfg.Tmux.Panes))
 	}
 }
+
+func TestParse_NegativePort(t *testing.T) {
+	yaml := []byte(`
+services:
+  app:
+    port: -1
+    env: PORT
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for negative port")
+	}
+}
+
+func TestParse_PaneWithName(t *testing.T) {
+	yaml := []byte(`
+services:
+  app:
+    port: 3000
+    env: PORT
+
+tmux:
+  panes:
+    - nvim
+    - name: dev
+      cmd: pnpm dev
+      optional: true
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(cfg.Tmux.Panes) != 2 {
+		t.Fatalf("expected 2 panes, got %d", len(cfg.Tmux.Panes))
+	}
+
+	// String pane should have empty name
+	if cfg.Tmux.Panes[0].Name != "" {
+		t.Errorf("expected empty name for string pane, got %s", cfg.Tmux.Panes[0].Name)
+	}
+
+	// Named pane
+	if cfg.Tmux.Panes[1].Name != "dev" {
+		t.Errorf("expected pane name 'dev', got %s", cfg.Tmux.Panes[1].Name)
+	}
+	if cfg.Tmux.Panes[1].Cmd != "pnpm dev" {
+		t.Errorf("expected pane cmd 'pnpm dev', got %s", cfg.Tmux.Panes[1].Cmd)
+	}
+	if !cfg.Tmux.Panes[1].Optional {
+		t.Errorf("expected pane to be optional")
+	}
+}
+
+func TestParse_InvalidSplitDirection(t *testing.T) {
+	yaml := []byte(`
+services:
+  app:
+    port: 3000
+    env: PORT
+
+tmux:
+  panes:
+    - split: diagonal
+      panes:
+        - nvim
+        - claude
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for invalid split direction")
+	}
+}
+
+func TestParse_NestedSplitsDeep(t *testing.T) {
+	yaml := []byte(`
+services:
+  app:
+    port: 3000
+    env: PORT
+
+tmux:
+  panes:
+    - cmd: nvim
+      size: "60%"
+    - split: vertical
+      panes:
+        - cmd: claude
+          size: "50%"
+        - split: horizontal
+          panes:
+            - cmd: pnpm dev
+            - cmd: pnpm test
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Top level: 2 panes (nvim + vertical split)
+	if len(cfg.Tmux.Panes) != 2 {
+		t.Fatalf("expected 2 top-level panes, got %d", len(cfg.Tmux.Panes))
+	}
+
+	// Vertical split has 2 children (claude + horizontal split)
+	vSplit := cfg.Tmux.Panes[1]
+	if len(vSplit.Panes) != 2 {
+		t.Fatalf("expected 2 panes in vertical split, got %d", len(vSplit.Panes))
+	}
+
+	// Nested horizontal split has 2 leaf panes
+	hSplit := vSplit.Panes[1]
+	if hSplit.Split != "horizontal" {
+		t.Errorf("expected split 'horizontal', got %s", hSplit.Split)
+	}
+	if len(hSplit.Panes) != 2 {
+		t.Fatalf("expected 2 panes in horizontal split, got %d", len(hSplit.Panes))
+	}
+	if hSplit.Panes[0].Cmd != "pnpm dev" {
+		t.Errorf("expected 'pnpm dev', got %s", hSplit.Panes[0].Cmd)
+	}
+	if hSplit.Panes[1].Cmd != "pnpm test" {
+		t.Errorf("expected 'pnpm test', got %s", hSplit.Panes[1].Cmd)
+	}
+}
+
+func TestParse_TmuxEmptyPanes(t *testing.T) {
+	yaml := []byte(`
+tmux:
+  layout: main-vertical
+  panes: []
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Tmux == nil {
+		t.Fatal("expected tmux config")
+	}
+	if len(cfg.Tmux.Panes) != 0 {
+		t.Errorf("expected 0 panes, got %d", len(cfg.Tmux.Panes))
+	}
+}
+
+func TestParse_DefaultTmuxMode(t *testing.T) {
+	// When tmux mode is omitted, it should be empty string (default applied at runtime)
+	yaml := []byte(`
+tmux:
+  panes:
+    - nvim
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Tmux.Mode != "" {
+		t.Errorf("expected empty mode (default), got %s", cfg.Tmux.Mode)
+	}
+}
+
+func TestDiscover_SymlinkDir(t *testing.T) {
+	// Config in a parent dir reached via a symlinked child
+	realDir := t.TempDir()
+	configPath := filepath.Join(realDir, ConfigFileName)
+	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	childDir := filepath.Join(realDir, "child")
+	if err := os.MkdirAll(childDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	foundPath, projectRoot, err := Discover(childDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if foundPath != configPath {
+		t.Errorf("expected config at %s, got %s", configPath, foundPath)
+	}
+	if projectRoot != realDir {
+		t.Errorf("expected project root %s, got %s", realDir, projectRoot)
+	}
+}
