@@ -5,7 +5,6 @@ import (
 	"crypto/md5"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"sort"
 
 	"grove/internal/config"
@@ -96,10 +95,6 @@ var blockedPorts = map[int]bool{
 	10080: true,
 }
 
-// PortChecker is a function that checks whether a port is available.
-// Returns true if the port is available, false otherwise.
-type PortChecker func(port int) bool
-
 // HashOffset computes a deterministic offset from a branch name.
 // offset = md5(branchName) mod maxOffset
 func HashOffset(branchName string, maxOffset int) int {
@@ -114,39 +109,25 @@ func IsPortBlocked(port int) bool {
 	return blockedPorts[port]
 }
 
-// CheckPortAvailable attempts to bind to the given TCP port on localhost.
-// Returns true if the port is available, false if it is in use.
-func CheckPortAvailable(port int) bool {
-	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	if err != nil {
-		return false
-	}
-	ln.Close()
-	return true
-}
-
 // Assignment holds the result of port assignment for all services.
 type Assignment struct {
 	// Ports maps service name to assigned port.
 	Ports map[string]int
 
-	// Offset is the final offset used (may differ from initial hash if collisions occurred).
+	// Offset is the final offset used (may differ from initial hash if blocked ports were hit).
 	Offset int
 }
 
 // Assign computes deterministic port assignments for all services defined in the config.
 // It hashes the branch name to produce an offset, then adds that offset to each service's
-// base port. If any resulting port is blocked or unavailable, the offset is incremented
+// base port. If any resulting port is blocked or exceeds 65535, the offset is incremented
 // and all ports are recomputed, up to MaxCollisionAttempts times.
 //
-// The checker parameter controls port availability checking. Pass nil to use the
-// default CheckPortAvailable (real TCP bind check). Pass a custom function for testing.
-func Assign(services map[string]config.Service, branchName string, maxOffset int, checker PortChecker) (*Assignment, error) {
+// Port assignment is purely deterministic — the same branch name always produces the
+// same ports. No runtime availability checking is performed.
+func Assign(services map[string]config.Service, branchName string, maxOffset int) (*Assignment, error) {
 	if maxOffset <= 0 {
 		maxOffset = DefaultMaxOffset
-	}
-	if checker == nil {
-		checker = CheckPortAvailable
 	}
 
 	baseOffset := HashOffset(branchName, maxOffset)
@@ -175,12 +156,6 @@ func Assign(services map[string]config.Service, branchName string, maxOffset int
 
 			// Check port is not browser-restricted
 			if IsPortBlocked(port) {
-				valid = false
-				break
-			}
-
-			// Check port availability
-			if !checker(port) {
 				valid = false
 				break
 			}

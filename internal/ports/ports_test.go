@@ -7,7 +7,6 @@ import (
 )
 
 func TestHashOffset_Deterministic(t *testing.T) {
-	// Same branch name should always produce the same offset
 	offset1 := HashOffset("feat/auth", DefaultMaxOffset)
 	offset2 := HashOffset("feat/auth", DefaultMaxOffset)
 
@@ -17,7 +16,6 @@ func TestHashOffset_Deterministic(t *testing.T) {
 }
 
 func TestHashOffset_DifferentBranches(t *testing.T) {
-	// Different branches should (very likely) produce different offsets
 	offset1 := HashOffset("feat/auth", DefaultMaxOffset)
 	offset2 := HashOffset("feat/billing", DefaultMaxOffset)
 
@@ -27,7 +25,6 @@ func TestHashOffset_DifferentBranches(t *testing.T) {
 }
 
 func TestHashOffset_Range(t *testing.T) {
-	// Offset should always be in [0, maxOffset)
 	branches := []string{
 		"main",
 		"feat/auth",
@@ -64,13 +61,13 @@ func TestIsPortBlocked(t *testing.T) {
 		{5061, true},
 		{6000, true},
 		{22, true},
-		{80, false},     // common HTTP port, not blocked
-		{443, false},    // common HTTPS port, not blocked
-		{3000, false},   // typical dev port
-		{4000, false},   // typical dev port
-		{8080, false},   // typical dev port
-		{10080, true},   // blocked
-		{50000, false},  // high port, not blocked
+		{80, false},
+		{443, false},
+		{3000, false},
+		{4000, false},
+		{8080, false},
+		{10080, true},
+		{50000, false},
 	}
 
 	for _, tt := range tests {
@@ -86,10 +83,7 @@ func TestAssign_Basic(t *testing.T) {
 		"web": {Port: 3000, Env: "WEB_PORT"},
 	}
 
-	// Use a checker that always says ports are available
-	allAvailable := func(port int) bool { return true }
-
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset, allAvailable)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -116,14 +110,12 @@ func TestAssign_Deterministic(t *testing.T) {
 		"api": {Port: 4000, Env: "PORT"},
 	}
 
-	allAvailable := func(port int) bool { return true }
-
-	result1, err := Assign(services, "feat/auth", DefaultMaxOffset, allAvailable)
+	result1, err := Assign(services, "feat/auth", DefaultMaxOffset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	result2, err := Assign(services, "feat/auth", DefaultMaxOffset, allAvailable)
+	result2, err := Assign(services, "feat/auth", DefaultMaxOffset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,60 +125,17 @@ func TestAssign_Deterministic(t *testing.T) {
 	}
 }
 
-func TestAssign_CollisionHandling(t *testing.T) {
-	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
-	}
-
-	// First offset's port is "in use", second attempt should succeed
-	expectedOffset := HashOffset("test-branch", DefaultMaxOffset)
-	blockedPort := 4000 + expectedOffset
-
-	callCount := 0
-	checker := func(port int) bool {
-		callCount++
-		// Block the first computed port, allow everything else
-		return port != blockedPort
-	}
-
-	result, err := Assign(services, "test-branch", DefaultMaxOffset, checker)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Should have moved to next offset
-	if result.Ports["api"] == blockedPort {
-		t.Errorf("should not have assigned blocked port %d", blockedPort)
-	}
-
-	// The new offset should be one more than the original (mod maxOffset)
-	expectedNewOffset := (expectedOffset + 1) % DefaultMaxOffset
-	if result.Offset != expectedNewOffset {
-		t.Errorf("expected offset %d after collision, got %d", expectedNewOffset, result.Offset)
-	}
-}
-
 func TestAssign_BlockedPortSkipped(t *testing.T) {
-	// Use a base port such that base + hash offset lands on a blocked port
-	// Port 4045 is blocked. If base=4000 and offset=45, we hit 4045.
 	services := map[string]config.Service{
 		"api": {Port: 4000, Env: "PORT"},
 	}
 
-	// Find a branch that produces offset 45
-	// We'll just use the blocked port check directly:
-	// simulate by making a checker that allows everything, and ensure the
-	// Assign function skips the blocked port
-	allAvailable := func(port int) bool { return true }
-
-	// Test with a crafted scenario: override offset to land on 4045
-	// Since we can't control the hash, test IsPortBlocked directly
 	if !IsPortBlocked(4045) {
 		t.Fatal("4045 should be blocked")
 	}
 
 	// Run assignment — the important thing is it doesn't return a blocked port
-	result, err := Assign(services, "any-branch", DefaultMaxOffset, allAvailable)
+	result, err := Assign(services, "any-branch", DefaultMaxOffset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -196,29 +145,13 @@ func TestAssign_BlockedPortSkipped(t *testing.T) {
 	}
 }
 
-func TestAssign_AllPortsUnavailable(t *testing.T) {
-	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
-	}
-
-	// No ports available
-	noneAvailable := func(port int) bool { return false }
-
-	_, err := Assign(services, "feat/auth", DefaultMaxOffset, noneAvailable)
-	if err == nil {
-		t.Fatal("expected error when no ports available")
-	}
-}
-
 func TestAssign_PortOverflow(t *testing.T) {
 	// Base port near 65535 — offset could push it over
 	services := map[string]config.Service{
 		"api": {Port: 65000, Env: "PORT"},
 	}
 
-	allAvailable := func(port int) bool { return true }
-
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset, allAvailable)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
 	if err != nil {
 		// If the hash-based offset pushes us over 65535 for all attempts, error is fine
 		return
@@ -231,9 +164,8 @@ func TestAssign_PortOverflow(t *testing.T) {
 
 func TestAssign_EmptyServices(t *testing.T) {
 	services := map[string]config.Service{}
-	allAvailable := func(port int) bool { return true }
 
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset, allAvailable)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -248,10 +180,8 @@ func TestAssign_DefaultMaxOffset(t *testing.T) {
 		"api": {Port: 4000, Env: "PORT"},
 	}
 
-	allAvailable := func(port int) bool { return true }
-
 	// Pass 0 for maxOffset to use default
-	result, err := Assign(services, "feat/auth", 0, allAvailable)
+	result, err := Assign(services, "feat/auth", 0)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,50 +191,29 @@ func TestAssign_DefaultMaxOffset(t *testing.T) {
 	}
 }
 
-func TestAssign_MultipleServicesOneBlocked(t *testing.T) {
-	// If one service's port is unavailable at a given offset, ALL services
-	// should move to the next offset together
+func TestAssign_ConsistentAcrossCommands(t *testing.T) {
+	// Verify that the same branch always gets the same ports,
+	// regardless of how many times Assign is called
 	services := map[string]config.Service{
 		"api": {Port: 4000, Env: "PORT"},
 		"web": {Port: 3000, Env: "WEB_PORT"},
 	}
 
-	expectedOffset := HashOffset("multi-test", DefaultMaxOffset)
-	// Block the web port at the first offset
-	blockedWebPort := 3000 + expectedOffset
-
-	checker := func(port int) bool {
-		return port != blockedWebPort
+	results := make([]*Assignment, 5)
+	for i := range results {
+		var err error
+		results[i], err = Assign(services, "feat/consistent", DefaultMaxOffset)
+		if err != nil {
+			t.Fatalf("attempt %d: unexpected error: %v", i, err)
+		}
 	}
 
-	result, err := Assign(services, "multi-test", DefaultMaxOffset, checker)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for i := 1; i < len(results); i++ {
+		if results[i].Ports["api"] != results[0].Ports["api"] {
+			t.Errorf("attempt %d: api port %d != %d", i, results[i].Ports["api"], results[0].Ports["api"])
+		}
+		if results[i].Ports["web"] != results[0].Ports["web"] {
+			t.Errorf("attempt %d: web port %d != %d", i, results[i].Ports["web"], results[0].Ports["web"])
+		}
 	}
-
-	// Verify both services moved to the same new offset
-	apiOffset := result.Ports["api"] - 4000
-	webOffset := result.Ports["web"] - 3000
-
-	if apiOffset != webOffset {
-		t.Errorf("services should share offset, api=%d web=%d", apiOffset, webOffset)
-	}
-
-	if result.Ports["web"] == blockedWebPort {
-		t.Errorf("should not have assigned blocked web port %d", blockedWebPort)
-	}
-}
-
-func TestCheckPortAvailable_HighPort(t *testing.T) {
-	// Port 0 tells the OS to pick a free port — we just test the function runs
-	// We can't guarantee specific high ports are free, but 0 should work
-	// Actually test a realistic scenario: bind a port, check it's unavailable
-	// This is an integration-style test
-	if testing.Short() {
-		t.Skip("skipping port binding test in short mode")
-	}
-
-	// A very high port should generally be available
-	// Just verify the function doesn't panic
-	_ = CheckPortAvailable(59999)
 }
