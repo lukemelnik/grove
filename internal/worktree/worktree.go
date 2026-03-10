@@ -463,6 +463,15 @@ func (m *Manager) DefaultBranch() string {
 	return "main"
 }
 
+// BranchHasUniqueCommits returns true if the branch has commits not in baseBranch.
+func (m *Manager) BranchHasUniqueCommits(branch, baseBranch string) (bool, error) {
+	out, err := m.git.Run("rev-list", "--count", baseBranch+".."+branch)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(out) != "0", nil
+}
+
 // GoneBranches returns branch names whose remote tracking branch has been deleted.
 // These are branches that show [gone] in `git branch -vv` output.
 func (m *Manager) GoneBranches() ([]string, error) {

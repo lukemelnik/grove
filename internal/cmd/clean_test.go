@@ -80,8 +80,8 @@ func TestCleanCmd_DryRun(t *testing.T) {
 	if !strings.Contains(output, "feat/merged-branch") {
 		t.Errorf("expected merged branch in dry-run output, got:\n%s", output)
 	}
-	if !strings.Contains(output, "merged") {
-		t.Errorf("expected 'merged' reason in output, got:\n%s", output)
+	if !strings.Contains(output, "unchanged") {
+		t.Errorf("expected 'unchanged' reason in output, got:\n%s", output)
 	}
 	// Dry run should NOT clean anything
 	if strings.Contains(output, "Cleaned") {
@@ -225,8 +225,8 @@ func TestCleanCmd_JSONOutput(t *testing.T) {
 	for _, c := range result.Cleaned {
 		if c.Branch == "feat/json-clean" {
 			found = true
-			if c.Reason != "merged" {
-				t.Errorf("expected reason 'merged', got %q", c.Reason)
+			if c.Reason != "unchanged" {
+				t.Errorf("expected reason 'unchanged', got %q", c.Reason)
 			}
 		}
 	}
@@ -324,7 +324,7 @@ func TestCleanCmd_MainBranchNeverCleaned(t *testing.T) {
 	// The output should not mention "main" as a stale branch
 	output := buf.String()
 	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "main") && strings.Contains(line, "merged") {
+		if strings.Contains(line, "main") && (strings.Contains(line, "merged") || strings.Contains(line, "unchanged")) {
 			t.Error("main branch should never be listed as stale")
 		}
 	}

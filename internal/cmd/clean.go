@@ -236,7 +236,7 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 		})
 	}
 
-	// Merged branches
+	// Merged branches — distinguish "merged" (had work) from "unchanged" (no commits)
 	for _, branch := range mergedBranches {
 		if branch == defaultBranch {
 			continue
@@ -249,9 +249,14 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 			continue
 		}
 		seen[branch] = true
+		reason := "merged"
+		hasUnique, err := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
+		if err == nil && !hasUnique {
+			reason = "unchanged"
+		}
 		stale = append(stale, staleWorktree{
 			Branch:   branch,
-			Reason:   "merged",
+			Reason:   reason,
 			Worktree: path,
 		})
 	}
