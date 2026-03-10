@@ -71,6 +71,7 @@ tmux:
   #     name: dev          # identifier for --with flag
   #     optional: true     # skipped unless --all or --with dev
   #     autorun: false     # type command but don't press Enter (default: true)
+  #     setup: pnpm install  # runs before cmd (always executes, even if autorun: false)
   #
   # Split form — nested pane layout (Tier 3):
   #   - split: vertical    # or "horizontal"

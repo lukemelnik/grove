@@ -332,8 +332,8 @@ func effectiveLayout(cfg *config.TmuxConfig) string {
 // createPanesPreset handles Tier 1 and Tier 2 layouts.
 func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane, layout, mainSize string, env map[string]string) error {
 	// First pane already exists in the session/window. Send command to it.
-	if panes[0].Cmd != "" {
-		if err := m.sendCommand(target, panes[0].Cmd, panes[0].ShouldAutorun()); err != nil {
+	if panes[0].Cmd != "" || panes[0].Setup != "" {
+		if err := m.sendPaneCommands(target, panes[0]); err != nil {
 			return fmt.Errorf("sending command to first pane: %w", err)
 		}
 	}
@@ -347,8 +347,8 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 		if err != nil {
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
-		if panes[i].Cmd != "" {
-			if err := m.sendCommand(target, panes[i].Cmd, panes[i].ShouldAutorun()); err != nil {
+		if panes[i].Cmd != "" || panes[i].Setup != "" {
+			if err := m.sendPaneCommands(target, panes[i]); err != nil {
 				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
@@ -448,8 +448,8 @@ func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, s
 		}
 
 		// Leaf pane — send command
-		if p.Cmd != "" {
-			if err := m.sendCommand(paneIDs[i], p.Cmd, p.ShouldAutorun()); err != nil {
+		if p.Cmd != "" || p.Setup != "" {
+			if err := m.sendPaneCommands(paneIDs[i], p); err != nil {
 				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
@@ -464,8 +464,8 @@ func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, s
 // createPanesRaw handles Tier 4: raw tmux layout string.
 func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, rawLayout string, env map[string]string) error {
 	// First pane already exists. Send command.
-	if len(panes) > 0 && panes[0].Cmd != "" {
-		if err := m.sendCommand(target, panes[0].Cmd, panes[0].ShouldAutorun()); err != nil {
+	if len(panes) > 0 && (panes[0].Cmd != "" || panes[0].Setup != "") {
+		if err := m.sendPaneCommands(target, panes[0]); err != nil {
 			return fmt.Errorf("sending command to first pane: %w", err)
 		}
 	}
@@ -480,8 +480,8 @@ func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, ra
 		if err != nil {
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
-		if panes[i].Cmd != "" {
-			if err := m.sendCommand(target, panes[i].Cmd, panes[i].ShouldAutorun()); err != nil {
+		if panes[i].Cmd != "" || panes[i].Setup != "" {
+			if err := m.sendPaneCommands(target, panes[i]); err != nil {
 				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
@@ -630,15 +630,46 @@ func envFlags(env map[string]string) []string {
 	return args
 }
 
-// sendCommand sends a command to a tmux pane. If autorun is true, it presses Enter
-// to execute the command. If false, the command is typed but left for the user to run.
-func (m *Manager) sendCommand(target, cmd string, autorun bool) error {
-	args := []string{"send-keys", "-t", target, cmd}
-	if autorun {
-		args = append(args, "Enter")
+// sendPaneCommands sends setup and/or cmd to a tmux pane according to autorun rules.
+//
+// Behavior matrix:
+//
+//	setup="" , cmd="X", autorun=true  → send "X" + Enter
+//	setup="" , cmd="X", autorun=false → send "X" (no Enter)
+//	setup="S", cmd="" , (any)         → send "S" + Enter
+//	setup="S", cmd="X", autorun=true  → send "S && X" + Enter
+//	setup="S", cmd="X", autorun=false → send "S" + Enter, then send "X" (no Enter)
+func (m *Manager) sendPaneCommands(target string, p config.Pane) error {
+	setup := p.Setup
+	cmd := p.Cmd
+	autorun := p.ShouldAutorun()
+
+	switch {
+	case setup != "" && cmd != "" && autorun:
+		_, err := m.runner.Run("send-keys", "-t", target, setup+" && "+cmd, "Enter")
+		return err
+
+	case setup != "" && cmd != "" && !autorun:
+		if _, err := m.runner.Run("send-keys", "-t", target, setup, "Enter"); err != nil {
+			return err
+		}
+		_, err := m.runner.Run("send-keys", "-t", target, cmd)
+		return err
+
+	case setup != "":
+		_, err := m.runner.Run("send-keys", "-t", target, setup, "Enter")
+		return err
+
+	case cmd != "" && autorun:
+		_, err := m.runner.Run("send-keys", "-t", target, cmd, "Enter")
+		return err
+
+	case cmd != "":
+		_, err := m.runner.Run("send-keys", "-t", target, cmd)
+		return err
 	}
-	_, err := m.runner.Run(args...)
-	return err
+
+	return nil
 }
 
 // sortedKeys returns the keys of a map in sorted order.

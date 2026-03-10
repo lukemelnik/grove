@@ -1452,6 +1452,83 @@ func TestCreate_Tier3_SizeOnNonFirstPane(t *testing.T) {
 	}
 }
 
+func TestSendPaneCommands_Setup(t *testing.T) {
+	boolPtr := func(b bool) *bool { return &b }
+
+	tests := []struct {
+		name     string
+		pane     config.Pane
+		wantKeys [][]string // expected send-keys commands
+	}{
+		{
+			name: "cmd only with autorun",
+			pane: config.Pane{Cmd: "pnpm dev"},
+			wantKeys: [][]string{
+				{"send-keys", "-t", "test", "pnpm dev", "Enter"},
+			},
+		},
+		{
+			name: "cmd only without autorun",
+			pane: config.Pane{Cmd: "pnpm dev", Autorun: boolPtr(false)},
+			wantKeys: [][]string{
+				{"send-keys", "-t", "test", "pnpm dev"},
+			},
+		},
+		{
+			name: "setup only",
+			pane: config.Pane{Setup: "pnpm install"},
+			wantKeys: [][]string{
+				{"send-keys", "-t", "test", "pnpm install", "Enter"},
+			},
+		},
+		{
+			name: "setup + cmd with autorun",
+			pane: config.Pane{Setup: "pnpm install", Cmd: "pnpm dev"},
+			wantKeys: [][]string{
+				{"send-keys", "-t", "test", "pnpm install && pnpm dev", "Enter"},
+			},
+		},
+		{
+			name: "setup + cmd without autorun",
+			pane: config.Pane{Setup: "pnpm install", Cmd: "pnpm dev", Autorun: boolPtr(false)},
+			wantKeys: [][]string{
+				{"send-keys", "-t", "test", "pnpm install", "Enter"},
+				{"send-keys", "-t", "test", "pnpm dev"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runner := newMockRunner()
+			mgr := NewManager(runner)
+
+			err := mgr.sendPaneCommands("test", tt.pane)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+
+			sendKeys := runner.findAllCommands("send-keys")
+			if len(sendKeys) != len(tt.wantKeys) {
+				t.Fatalf("expected %d send-keys commands, got %d:\n%s", len(tt.wantKeys), len(sendKeys), runner.commandString())
+			}
+
+			for i, want := range tt.wantKeys {
+				got := sendKeys[i]
+				if len(got) != len(want) {
+					t.Errorf("send-keys[%d]: expected %v, got %v", i, want, got)
+					continue
+				}
+				for j := range want {
+					if got[j] != want[j] {
+						t.Errorf("send-keys[%d][%d]: expected %q, got %q", i, j, want[j], got[j])
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHasSession(t *testing.T) {
 	t.Run("session exists", func(t *testing.T) {
 		runner := newMockRunner()

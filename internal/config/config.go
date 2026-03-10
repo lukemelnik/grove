@@ -93,6 +93,12 @@ type Pane struct {
 	// Cmd is the command to run in this pane.
 	Cmd string `yaml:"cmd,omitempty"`
 
+	// Setup is a command that runs before Cmd (e.g. "pnpm install").
+	// Always executes regardless of Autorun. If Setup succeeds and Cmd is set,
+	// the behavior depends on Autorun: when true, Cmd runs immediately;
+	// when false, Cmd is typed but not executed.
+	Setup string `yaml:"setup,omitempty"`
+
 	// Optional marks this pane as optional (skipped unless --all or --with).
 	Optional bool `yaml:"optional,omitempty"`
 
