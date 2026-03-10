@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"grove/internal/config"
 )
 
 func TestInitCmd_FullInteractive(t *testing.T) {
@@ -141,6 +143,27 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	// Verify output mentions the file was written
 	if !strings.Contains(buf.String(), "Wrote") {
 		t.Errorf("output should mention writing the file, got:\n%s", buf.String())
+	}
+
+	// Verify the generated YAML round-trips through config.Parse
+	parsed, err := config.Parse(data)
+	if err != nil {
+		t.Fatalf("generated .grove.yml failed to parse: %v\nContent:\n%s", err, content)
+	}
+	if parsed.WorktreeDir != "../.grove-worktrees" {
+		t.Errorf("parsed WorktreeDir = %q, want %q", parsed.WorktreeDir, "../.grove-worktrees")
+	}
+	if len(parsed.Services) != 2 {
+		t.Errorf("parsed %d services, want 2", len(parsed.Services))
+	}
+	if parsed.Tmux == nil {
+		t.Fatal("parsed Tmux config is nil, want non-nil")
+	}
+	if parsed.Tmux.Mode != "session" {
+		t.Errorf("parsed Tmux.Mode = %q, want %q", parsed.Tmux.Mode, "session")
+	}
+	if len(parsed.Tmux.Panes) != 2 {
+		t.Errorf("parsed %d panes, want 2", len(parsed.Tmux.Panes))
 	}
 }
 
