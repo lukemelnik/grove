@@ -1281,6 +1281,103 @@ func TestCreate_Tier3_SizeOnNonFirstPane(t *testing.T) {
 	}
 }
 
+func TestHasSession(t *testing.T) {
+	t.Run("session exists", func(t *testing.T) {
+		runner := newMockRunner()
+		mgr := NewManager(runner)
+
+		got := mgr.HasSession("test-session")
+		if !got {
+			t.Error("expected HasSession to return true when no error")
+		}
+	})
+
+	t.Run("session does not exist", func(t *testing.T) {
+		runner := newMockRunner()
+		runner.errors["has-session -t missing-session"] = fmt.Errorf("session not found")
+		mgr := NewManager(runner)
+
+		got := mgr.HasSession("missing-session")
+		if got {
+			t.Error("expected HasSession to return false when error")
+		}
+	})
+}
+
+func TestHasWindow(t *testing.T) {
+	t.Run("window exists", func(t *testing.T) {
+		runner := newMockRunner()
+		mgr := NewManager(runner)
+
+		got := mgr.HasWindow("test-window")
+		if !got {
+			t.Error("expected HasWindow to return true when no error")
+		}
+	})
+
+	t.Run("window does not exist", func(t *testing.T) {
+		runner := newMockRunner()
+		runner.errors["list-windows -a -F #{window_name} -f #{==:#{window_name},missing-window}"] = fmt.Errorf("no windows found")
+		mgr := NewManager(runner)
+
+		got := mgr.HasWindow("missing-window")
+		if got {
+			t.Error("expected HasWindow to return false when error")
+		}
+	})
+}
+
+func TestAttach_OutsideTmux_Session(t *testing.T) {
+	t.Setenv("TMUX", "")
+
+	runner := newMockRunner()
+	mgr := NewManager(runner)
+
+	err := mgr.Attach("test-session", "session")
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+
+	idx := runner.findCommand("attach", "-t", "test-session")
+	if idx < 0 {
+		t.Errorf("expected tmux attach:\n%s", runner.commandString())
+	}
+}
+
+func TestAttach_InsideTmux_SwitchClient(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+
+	runner := newMockRunner()
+	mgr := NewManager(runner)
+
+	err := mgr.Attach("test-session", "session")
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+
+	idx := runner.findCommand("switch-client", "-t", "test-session")
+	if idx < 0 {
+		t.Errorf("expected switch-client:\n%s", runner.commandString())
+	}
+}
+
+func TestAttach_WindowMode(t *testing.T) {
+	t.Setenv("TMUX", "")
+
+	runner := newMockRunner()
+	mgr := NewManager(runner)
+
+	err := mgr.Attach("test-window", "window")
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+
+	idx := runner.findCommand("select-window", "-t", "test-window")
+	if idx < 0 {
+		t.Errorf("expected select-window:\n%s", runner.commandString())
+	}
+}
+
 func TestSortedKeys(t *testing.T) {
 	m := map[string]string{
 		"ZEBRA":    "1",

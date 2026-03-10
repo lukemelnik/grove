@@ -70,14 +70,22 @@
 
 **Status: COMPLETE**
 
-### Sprint 5: Command Implementation (wire everything together)
+### Sprint 5: Remaining Commands — `grove attach`, `grove delete`, `grove list`, `grove status`
 - [x] `grove create` tmux integration wired up in Sprint 4
-- [ ] Implement `grove attach`
-- [ ] Implement `grove delete` (with PR check via gh)
-- [ ] Implement `grove list` (with --json)
-- [ ] Implement `grove status` (with --json)
-- [ ] Implement `grove init` (interactive setup)
-- [ ] Write integration tests
+- [x] Implement `grove attach` (worktree check, tmux session/window detection, create-and-attach if needed, error with "did you mean grove create?" if no worktree)
+- [x] Implement `grove delete` (PR check via `gh`, --force to skip, --keep-branch, tmux cleanup, worktree removal, branch deletion)
+- [x] Implement `grove list` (text and --json output, port computation per branch, sorted output)
+- [x] Implement `grove status` (detect worktree from cwd, show branch/path/ports/env, --json output)
+- [x] Add `HasSession`, `HasWindow`, `Attach` methods to tmux Manager
+- [x] Add `ghCommandRunner` and `ghAvailable` vars for testable `gh` integration
+- [ ] Implement `grove init` (interactive setup — deferred to Sprint 6)
+- [x] Write integration tests for `grove attach` (no worktree error, no tmux config, tmux session creation, missing arg)
+- [x] Write integration tests for `grove delete` (basic, keep-branch, open PR aborts, force with open PR, gh not available, missing arg, checkOpenPRs unit tests)
+- [x] Write integration tests for `grove list` (empty, with worktrees, JSON output, no services)
+- [x] Write integration tests for `grove status` (inside worktree, JSON, not inside worktree, main worktree, minimal config)
+- [x] Write unit tests for tmux HasSession, HasWindow, Attach methods
+
+**Status: COMPLETE**
 
 ### Sprint 6: Polish & Distribution
 - [ ] Add shell completions (bash, zsh, fish)
@@ -91,3 +99,4 @@
 - Sprint 2: Fixed .env inline comment stripping — docstring claimed support but implementation was missing. Added implementation and test (`TestParseEnvContent_InlineComments`).
 - Sprint 3: Pulled `grove create` wiring (non-tmux flow) forward from Sprint 5 into Sprint 3, since the worktree + port + env pipeline naturally completes here. Sprint 5 retains tmux-integrated `grove create` and other commands.
 - Sprint 4: Pulled `grove create` tmux wiring forward from Sprint 5 into Sprint 4, since it naturally completes with the tmux manager. Sprint 5 marked that item as done. Added `tmuxRunnerFactory` var to `create.go` for test overridability.
+- Sprint 5: Deferred `grove init` (interactive setup) to Sprint 6 — it is independent of the other commands and fits better with polish/distribution. Added public `Attach` method to tmux Manager (refactored private `attach` to `doAttach`) for use by the `grove attach` command. Port computation in `grove list` and `grove status` uses a pass-through port checker (always returns true) since we want deterministic assignment, not availability checking, when displaying info.

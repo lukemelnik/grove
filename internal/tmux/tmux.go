@@ -191,12 +191,25 @@ func (m *Manager) Create(opts Options) error {
 
 	// Step 5: Attach/switch if requested
 	if opts.Attach {
-		if err := m.attach(name, mode); err != nil {
+		if err := m.doAttach(name, mode); err != nil {
 			return fmt.Errorf("attaching to tmux: %w", err)
 		}
 	}
 
 	return nil
+}
+
+// HasSession checks if a tmux session with the given name exists.
+func (m *Manager) HasSession(name string) bool {
+	_, err := m.runner.Run("has-session", "-t", name)
+	return err == nil
+}
+
+// HasWindow checks if a tmux window with the given name exists.
+// It uses list-windows to search across all sessions.
+func (m *Manager) HasWindow(name string) bool {
+	_, err := m.runner.Run("list-windows", "-a", "-F", "#{window_name}", "-f", "#{==:#{window_name},"+name+"}")
+	return err == nil
 }
 
 // Destroy kills the tmux session or window for a branch.
@@ -474,8 +487,14 @@ func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, ra
 	return nil
 }
 
-// attach attaches to or switches to the tmux session/window.
-func (m *Manager) attach(name, mode string) error {
+// Attach attaches to or switches to the tmux session/window.
+// This is the public version of the attach method.
+func (m *Manager) Attach(name, mode string) error {
+	return m.doAttach(name, mode)
+}
+
+// doAttach implements the attach/switch logic.
+func (m *Manager) doAttach(name, mode string) error {
 	if os.Getenv("TMUX") != "" {
 		// Already inside tmux — switch client
 		_, err := m.runner.Run("switch-client", "-t", name)
