@@ -50,16 +50,28 @@
 **Status: COMPLETE**
 
 ### Sprint 4: Tmux Integration
-- [ ] Implement session/window creation
-- [ ] Implement environment injection (tmux set-environment)
-- [ ] Implement pane creation with all 4 layout tiers
-- [ ] Implement optional pane filtering (--all, --with)
-- [ ] Implement attach/switch behavior
-- [ ] Implement session/window cleanup on delete
-- [ ] Write tests for tmux command generation
+- [x] Implement tmux Runner interface for testability (mock + real implementations via os/exec)
+- [x] Implement session creation (`tmux new-session -d -s <name> -c <path>`)
+- [x] Implement window creation (`tmux new-window -t <session>:<name> -c <path>`)
+- [x] Implement window mode fallback to session mode when not inside tmux
+- [x] Implement session/window naming (branch name slashes → dashes)
+- [x] Implement environment injection (`tmux set-environment`) before pane creation
+- [x] Implement Tier 1: preset layout (`select-layout` with preset name, default `main-vertical`)
+- [x] Implement Tier 2: preset with size hint (`set-option main-pane-width/height` before `select-layout`)
+- [x] Implement Tier 3: explicit splits (recursive split tree with `-h`/`-v` flags and `-p` percentage)
+- [x] Implement Tier 4: raw tmux layout string (applied via `select-layout`)
+- [x] Implement pane command execution (`send-keys`)
+- [x] Implement optional pane filtering (`--all` includes all, `--with <name>` includes by name/index)
+- [x] Implement nested split container optional pane filtering
+- [x] Implement attach behavior (`tmux attach` outside tmux, `switch-client` inside tmux)
+- [x] Implement session/window cleanup on delete (`kill-session` / `kill-window`)
+- [x] Wire tmux integration into `grove create` (after worktree + env resolution, before output)
+- [x] Write 29 unit tests for tmux command generation covering all tiers, modes, env injection, optional panes, attach, destroy
+
+**Status: COMPLETE**
 
 ### Sprint 5: Command Implementation (wire everything together)
-- [ ] Implement `grove create` tmux integration (full pipeline; non-tmux flow done in Sprint 3)
+- [x] `grove create` tmux integration wired up in Sprint 4
 - [ ] Implement `grove attach`
 - [ ] Implement `grove delete` (with PR check via gh)
 - [ ] Implement `grove list` (with --json)
@@ -78,3 +90,4 @@
 - No alerts for Sprint 1.
 - Sprint 2: Fixed .env inline comment stripping — docstring claimed support but implementation was missing. Added implementation and test (`TestParseEnvContent_InlineComments`).
 - Sprint 3: Pulled `grove create` wiring (non-tmux flow) forward from Sprint 5 into Sprint 3, since the worktree + port + env pipeline naturally completes here. Sprint 5 retains tmux-integrated `grove create` and other commands.
+- Sprint 4: Pulled `grove create` tmux wiring forward from Sprint 5 into Sprint 4, since it naturally completes with the tmux manager. Sprint 5 marked that item as done. Added `tmuxRunnerFactory` var to `create.go` for test overridability.
