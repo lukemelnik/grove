@@ -93,20 +93,17 @@ func (m *mockRunner) commandString() string {
 }
 
 func TestSessionName(t *testing.T) {
-	tests := []struct {
-		branch string
-		want   string
-	}{
-		{"main", "main"},
-		{"feat/auth", "feat-auth"},
-		{"fix/login-bug", "fix-login-bug"},
-		{"feat/nested/deep/branch", "feat-nested-deep-branch"},
+	if got := SessionName("main"); got != "main" {
+		t.Fatalf("SessionName(main) = %q, want main", got)
 	}
-	for _, tt := range tests {
-		got := SessionName(tt.branch)
-		if got != tt.want {
-			t.Errorf("SessionName(%q) = %q, want %q", tt.branch, got, tt.want)
-		}
+
+	slash := SessionName("feat/auth")
+	dash := SessionName("feat-auth")
+	if slash == dash {
+		t.Fatalf("expected distinct session names for feat/auth and feat-auth, got %q", slash)
+	}
+	if !strings.HasPrefix(slash, "feat-auth-") {
+		t.Fatalf("expected readable slash-branch prefix, got %q", slash)
 	}
 }
 
@@ -281,6 +278,7 @@ func TestFilterPanes(t *testing.T) {
 func TestCreate_SessionMode(t *testing.T) {
 	runner := newMockRunner()
 	mgr := NewManager(runner)
+	name := SessionName("feat/auth")
 
 	opts := Options{
 		Branch:       "feat/auth",
@@ -307,7 +305,7 @@ func TestCreate_SessionMode(t *testing.T) {
 	}
 
 	// Verify session creation (no -e flags on new-session)
-	idx := runner.findCommand("new-session", "-d", "-s", "feat-auth")
+	idx := runner.findCommand("new-session", "-d", "-s", name)
 	if idx < 0 {
 		t.Errorf("expected new-session command, got:\n%s", runner.commandString())
 	}
@@ -318,8 +316,8 @@ func TestCreate_SessionMode(t *testing.T) {
 		t.Errorf("expected 2 set-environment commands, got %d:\n%s", len(envCmds), runner.commandString())
 	}
 	for _, cmd := range envCmds {
-		if cmd[2] != "feat-auth" {
-			t.Errorf("expected set-environment on session feat-auth, got target %s", cmd[2])
+		if cmd[2] != name {
+			t.Errorf("expected set-environment on session %s, got target %s", name, cmd[2])
 		}
 	}
 
@@ -343,7 +341,7 @@ func TestCreate_SessionMode(t *testing.T) {
 	}
 
 	// Verify layout is applied
-	layoutIdx := runner.findCommand("select-layout", "-t", "feat-auth", "main-vertical")
+	layoutIdx := runner.findCommand("select-layout", "-t", name, "main-vertical")
 	if layoutIdx < 0 {
 		t.Errorf("expected select-layout command, got:\n%s", runner.commandString())
 	}
@@ -405,7 +403,7 @@ func TestCreate_WindowModeFallsBackToSession(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/path/to/worktree",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "window",
 			Panes: []config.Pane{
@@ -434,7 +432,7 @@ func TestCreate_Tier1_Preset(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "tiled",
@@ -485,7 +483,7 @@ func TestCreate_Tier2_PresetWithSize(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:     "session",
 			Layout:   "main-vertical",
@@ -524,7 +522,7 @@ func TestCreate_Tier2_MainHorizontal(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:     "session",
 			Layout:   "main-horizontal",
@@ -556,7 +554,7 @@ func TestCreate_Tier3_ExplicitSplits(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{
@@ -606,7 +604,7 @@ func TestCreate_Tier4_RawLayout(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: rawLayout,
@@ -650,7 +648,7 @@ func TestCreate_OptionalPanes_Default(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -689,7 +687,7 @@ func TestCreate_OptionalPanes_All(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -722,7 +720,7 @@ func TestCreate_OptionalPanes_WithName(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -768,7 +766,7 @@ func TestCreate_EnvInjectionOrder(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/work",
-		Env:   env,
+		Env:          env,
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -831,7 +829,7 @@ func TestCreate_AttachSession(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -862,7 +860,7 @@ func TestCreate_AttachSwitchClient(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -890,7 +888,7 @@ func TestCreate_NoAttach(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -920,7 +918,7 @@ func TestCreate_DefaultLayout(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			// No layout specified — should default to main-vertical
@@ -950,7 +948,7 @@ func TestCreate_NoPanes(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{"PORT": "4000"},
+		Env:          map[string]string{"PORT": "4000"},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:  "session",
 			Panes: []config.Pane{},
@@ -986,7 +984,7 @@ func TestCreate_EmptyCommand(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "even-horizontal",
@@ -1021,7 +1019,7 @@ func TestCreate_SinglePane(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -1053,6 +1051,7 @@ func TestCreate_SinglePane(t *testing.T) {
 func TestDestroy_Session(t *testing.T) {
 	runner := newMockRunner()
 	mgr := NewManager(runner)
+	name := SessionName("feat/auth")
 
 	cfg := &config.TmuxConfig{Mode: "session"}
 	err := mgr.Destroy("feat/auth", cfg)
@@ -1060,7 +1059,7 @@ func TestDestroy_Session(t *testing.T) {
 		t.Fatalf("Destroy failed: %v", err)
 	}
 
-	idx := runner.findCommand("kill-session", "-t", "feat-auth")
+	idx := runner.findCommand("kill-session", "-t", name)
 	if idx < 0 {
 		t.Errorf("expected kill-session:\n%s", runner.commandString())
 	}
@@ -1069,6 +1068,7 @@ func TestDestroy_Session(t *testing.T) {
 func TestDestroy_Window(t *testing.T) {
 	runner := newMockRunner()
 	mgr := NewManager(runner)
+	name := SessionName("feat/auth")
 
 	cfg := &config.TmuxConfig{Mode: "window"}
 	err := mgr.Destroy("feat/auth", cfg)
@@ -1076,7 +1076,7 @@ func TestDestroy_Window(t *testing.T) {
 		t.Fatalf("Destroy failed: %v", err)
 	}
 
-	idx := runner.findCommand("kill-window", "-t", "feat-auth")
+	idx := runner.findCommand("kill-window", "-t", name)
 	if idx < 0 {
 		t.Errorf("expected kill-window:\n%s", runner.commandString())
 	}
@@ -1086,6 +1086,7 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 	// This test verifies the exact command sequence for session mode
 	runner := newMockRunner()
 	mgr := NewManager(runner)
+	name := SessionName("feat/auth")
 
 	opts := Options{
 		Branch:       "feat/auth",
@@ -1123,23 +1124,23 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 		prefix []string
 	}{
 		// 1. Create session (no -e flags)
-		{[]string{"new-session", "-d", "-s", "feat-auth", "-c", "/path/to/worktree"}},
+		{[]string{"new-session", "-d", "-s", name, "-c", "/path/to/worktree"}},
 		// 2. Set environment (sorted alphabetically)
-		{[]string{"set-environment", "-t", "feat-auth", "PORT", "4045"}},
-		{[]string{"set-environment", "-t", "feat-auth", "VITE_API_URL", "http://localhost:4045"}},
-		{[]string{"set-environment", "-t", "feat-auth", "WEB_PORT", "3045"}},
+		{[]string{"set-environment", "-t", name, "PORT", "4045"}},
+		{[]string{"set-environment", "-t", name, "VITE_API_URL", "http://localhost:4045"}},
+		{[]string{"set-environment", "-t", name, "WEB_PORT", "3045"}},
 		// 3. First pane command
-		{[]string{"send-keys", "-t", "feat-auth", "nvim", "Enter"}},
+		{[]string{"send-keys", "-t", name, "nvim", "Enter"}},
 		// 4. Second pane (no -e flags)
-		{[]string{"split-window", "-h", "-t", "feat-auth", "-c", "/path/to/worktree"}},
-		{[]string{"send-keys", "-t", "feat-auth", "claude --model sonnet", "Enter"}},
+		{[]string{"split-window", "-h", "-t", name, "-c", "/path/to/worktree"}},
+		{[]string{"send-keys", "-t", name, "claude --model sonnet", "Enter"}},
 		// 5. Third pane (no -e flags)
-		{[]string{"split-window", "-h", "-t", "feat-auth", "-c", "/path/to/worktree"}},
-		{[]string{"send-keys", "-t", "feat-auth", "pnpm dev", "Enter"}},
+		{[]string{"split-window", "-h", "-t", name, "-c", "/path/to/worktree"}},
+		{[]string{"send-keys", "-t", name, "pnpm dev", "Enter"}},
 		// 6. Apply layout
-		{[]string{"select-layout", "-t", "feat-auth", "main-vertical"}},
+		{[]string{"select-layout", "-t", name, "main-vertical"}},
 		// 7. Select first pane
-		{[]string{"select-pane", "-t", "feat-auth.0"}},
+		{[]string{"select-pane", "-t", name + ".0"}},
 	}
 
 	if len(runner.commands) != len(expected) {
@@ -1257,7 +1258,7 @@ func TestCreate_Tier3_SizeOnSplit(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{
@@ -1316,7 +1317,7 @@ func TestCreate_Tier3_SizeOnNonFirstPane(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		Env:   map[string]string{},
+		Env:          map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{
@@ -1567,10 +1568,10 @@ func TestAttach_WindowMode_Fallback(t *testing.T) {
 
 func TestSortedKeys(t *testing.T) {
 	m := map[string]string{
-		"ZEBRA":    "1",
-		"APPLE":    "2",
-		"MANGO":    "3",
-		"BANANA":   "4",
+		"ZEBRA":  "1",
+		"APPLE":  "2",
+		"MANGO":  "3",
+		"BANANA": "4",
 	}
 	keys := sortedKeys(m)
 	expected := []string{"APPLE", "BANANA", "MANGO", "ZEBRA"}

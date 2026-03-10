@@ -115,6 +115,10 @@ func runClean(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	if !force && jsonOutput {
+		return outputError(cmd, fmt.Errorf("clean requires --force when stdout is not a terminal or --json is enabled; use --dry-run to preview"))
+	}
+
 	// Step 5: Confirm (unless --force or JSON mode)
 	if !force && !jsonOutput {
 		fmt.Fprintf(w, "Found %d stale worktrees:\n", len(stale))
@@ -235,6 +239,10 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 		if seen[branch] {
 			continue
 		}
+		hasUnique, err := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
+		if err != nil || hasUnique {
+			continue
+		}
 		seen[branch] = true
 		stale = append(stale, staleWorktree{
 			Branch:   branch,
@@ -280,12 +288,12 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 func destroyTmuxForBranch(cmd *cobra.Command, branch string, tmuxCfg *config.TmuxConfig) {
 	tmuxRunner := tmuxRunnerFactory()
 	tmuxMgr := tmux.NewManager(tmuxRunner)
-	name := tmux.SessionName(branch)
 
 	mode := tmuxCfg.Mode
 	if mode == "" {
 		mode = "window"
 	}
+	name := tmuxMgr.ResolveName(branch, mode)
 
 	switch mode {
 	case "session":

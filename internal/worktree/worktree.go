@@ -6,11 +6,14 @@
 package worktree
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode"
 )
 
 // GitRunner executes git commands. This interface exists to allow testing
@@ -42,20 +45,41 @@ func (g *realGitRunner) Run(args ...string) (string, error) {
 	return output, nil
 }
 
-// SanitizeBranchName converts a branch name into a safe directory name
-// by replacing slashes with dashes and stripping path traversal components.
+// SanitizeBranchName converts a branch name into a safe, collision-resistant
+// directory or tmux identifier.
 func SanitizeBranchName(branch string) string {
-	sanitized := strings.ReplaceAll(branch, "/", "-")
-	// Remove any ".." path components that could cause path traversal.
-	// After slash replacement, ".." can only appear as the whole string or
-	// embedded in the name. We replace standalone ".." with "dotdot".
-	if sanitized == ".." {
-		sanitized = "dotdot"
+	switch branch {
+	case "":
+		return "branch"
+	case ".":
+		return "dot"
+	case "..":
+		return "dotdot"
 	}
-	if sanitized == "." {
-		sanitized = "dot"
+
+	var b strings.Builder
+	for _, r := range branch {
+		switch {
+		case unicode.IsLetter(r), unicode.IsNumber(r), r == '.', r == '_', r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('-')
+		}
+	}
+
+	sanitized := strings.Trim(b.String(), "-")
+	if sanitized == "" {
+		sanitized = "branch"
+	}
+	if sanitized != branch {
+		return sanitized + "-" + shortBranchHash(branch)
 	}
 	return sanitized
+}
+
+func shortBranchHash(branch string) string {
+	sum := sha1.Sum([]byte(branch))
+	return hex.EncodeToString(sum[:4])
 }
 
 // WorktreePath computes the absolute path for a worktree given the project root,
@@ -321,7 +345,7 @@ type RemoveResult struct {
 // If git doesn't recognize the path as a worktree (e.g. leftover directory after
 // metadata was pruned), it prunes stale metadata and removes the directory directly.
 func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult, error) {
-	wtPath := WorktreePath(m.projectRoot, m.worktreeDir, branch)
+	wtPath, registered := m.resolveWorktreePath(branch)
 	result := &RemoveResult{}
 
 	args := []string{"worktree", "remove"}
@@ -335,14 +359,13 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 		// If git doesn't recognize it as a worktree, only treat it as ghost
 		// metadata when the path or registration still exists.
 		if strings.Contains(err.Error(), "not a working tree") {
-			registered, listErr := m.hasRegisteredWorktree(branch, wtPath)
 			_, statErr := os.Stat(wtPath)
 			pathExists := statErr == nil
 			if !registered && !pathExists {
 				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
 			}
-			if listErr != nil && !pathExists {
-				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
+			if pathExists && !registered && !looksLikeGitWorktree(wtPath) {
+				return nil, fmt.Errorf("refusing to remove unregistered path %s", wtPath)
 			}
 
 			// Prune stale worktree metadata first
@@ -390,19 +413,33 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 	return result, nil
 }
 
-func (m *Manager) hasRegisteredWorktree(branch, wtPath string) (bool, error) {
+func (m *Manager) resolveWorktreePath(branch string) (string, bool) {
 	worktrees, err := m.List()
-	if err != nil {
-		return false, err
-	}
-
-	for _, wt := range worktrees {
-		if wt.Path == wtPath || wt.Branch == branch {
-			return true, nil
+	if err == nil {
+		for _, wt := range worktrees {
+			if wt.Branch == branch {
+				return wt.Path, true
+			}
 		}
 	}
+	return WorktreePath(m.projectRoot, m.worktreeDir, branch), false
+}
 
-	return false, nil
+func looksLikeGitWorktree(path string) bool {
+	data, err := os.ReadFile(filepath.Join(path, ".git"))
+	if err != nil {
+		return false
+	}
+
+	content := strings.TrimSpace(string(data))
+	if !strings.HasPrefix(content, "gitdir:") {
+		return false
+	}
+
+	gitDir := strings.TrimSpace(strings.TrimPrefix(content, "gitdir:"))
+	gitDir = filepath.Clean(gitDir)
+	worktreesDir := string(filepath.Separator) + "worktrees" + string(filepath.Separator)
+	return strings.Contains(gitDir, worktreesDir)
 }
 
 // FindByPath finds the worktree info for a given working directory path.

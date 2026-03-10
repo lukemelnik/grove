@@ -12,26 +12,29 @@ import (
 // --- Unit tests for pure functions (no git needed) ---
 
 func TestSanitizeBranchName(t *testing.T) {
-	tests := []struct {
-		input string
-		want  string
-	}{
-		{"main", "main"},
-		{"feat/auth", "feat-auth"},
-		{"fix/login-bug", "fix-login-bug"},
-		{"feat/deep/nested/branch", "feat-deep-nested-branch"},
-		{"no-slashes", "no-slashes"},
-		{"..", "dotdot"},
-		{".", "dot"},
-		{"", ""},
+	if got := SanitizeBranchName("main"); got != "main" {
+		t.Fatalf("SanitizeBranchName(main) = %q, want main", got)
 	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got := SanitizeBranchName(tt.input)
-			if got != tt.want {
-				t.Errorf("SanitizeBranchName(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
+	if got := SanitizeBranchName("no-slashes"); got != "no-slashes" {
+		t.Fatalf("SanitizeBranchName(no-slashes) = %q, want no-slashes", got)
+	}
+	if got := SanitizeBranchName(".."); got != "dotdot" {
+		t.Fatalf("SanitizeBranchName(..) = %q, want dotdot", got)
+	}
+	if got := SanitizeBranchName("."); got != "dot" {
+		t.Fatalf("SanitizeBranchName(.) = %q, want dot", got)
+	}
+	if got := SanitizeBranchName(""); got != "branch" {
+		t.Fatalf("SanitizeBranchName(\"\") = %q, want branch", got)
+	}
+
+	slash := SanitizeBranchName("feat/auth")
+	dash := SanitizeBranchName("feat-auth")
+	if slash == dash {
+		t.Fatalf("expected distinct names for feat/auth and feat-auth, got %q", slash)
+	}
+	if !strings.HasPrefix(slash, "feat-auth-") {
+		t.Fatalf("expected feat/auth to keep a readable prefix, got %q", slash)
 	}
 }
 
@@ -48,14 +51,14 @@ func TestWorktreePath(t *testing.T) {
 			projectRoot: "/home/user/project",
 			worktreeDir: "../.grove-worktrees",
 			branch:      "feat/auth",
-			want:        "/home/user/.grove-worktrees/feat-auth",
+			want:        filepath.Join("/home/user/.grove-worktrees", SanitizeBranchName("feat/auth")),
 		},
 		{
 			name:        "absolute worktree dir",
 			projectRoot: "/home/user/project",
 			worktreeDir: "/tmp/worktrees",
 			branch:      "feat/auth",
-			want:        "/tmp/worktrees/feat-auth",
+			want:        filepath.Join("/tmp/worktrees", SanitizeBranchName("feat/auth")),
 		},
 		{
 			name:        "simple branch",
@@ -74,6 +77,10 @@ func TestWorktreePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func branchPath(base, branch string) string {
+	return filepath.Join(base, SanitizeBranchName(branch))
 }
 
 func TestBranchResolution_String(t *testing.T) {
@@ -220,9 +227,10 @@ func (m *mockGitRunner) wasCalled(args string) bool {
 
 func TestManager_Create_ExistingWorktree(t *testing.T) {
 	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/auth")
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
-			"worktree /worktrees/feat-auth\nHEAD def\nbranch refs/heads/feat/auth\n", nil)
+			"worktree "+path+"\nHEAD def\nbranch refs/heads/feat/auth\n", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/auth", "")
@@ -235,17 +243,18 @@ func TestManager_Create_ExistingWorktree(t *testing.T) {
 	if result.Branch != "feat/auth" {
 		t.Errorf("expected branch=feat/auth, got %s", result.Branch)
 	}
-	if result.Path != "/worktrees/feat-auth" {
-		t.Errorf("expected path=/worktrees/feat-auth, got %s", result.Path)
+	if result.Path != path {
+		t.Errorf("expected path=%s, got %s", path, result.Path)
 	}
 }
 
 func TestManager_Create_LocalBranch(t *testing.T) {
 	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/auth")
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/auth", "abc123", nil)
-	git.On("worktree add -- /worktrees/feat-auth feat/auth", "", nil)
+	git.On("worktree add -- "+path+" feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/auth", "")
@@ -262,13 +271,14 @@ func TestManager_Create_LocalBranch(t *testing.T) {
 
 func TestManager_Create_RemoteBranch(t *testing.T) {
 	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/auth")
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/auth", "", fmt.Errorf("not found"))
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/auth", "abc123", nil)
 	git.On("branch --track -- feat/auth origin/feat/auth", "", nil)
-	git.On("worktree add -- /worktrees/feat-auth feat/auth", "", nil)
+	git.On("worktree add -- "+path+" feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/auth", "")
@@ -285,6 +295,7 @@ func TestManager_Create_RemoteBranch(t *testing.T) {
 
 func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/new")
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/new", "", fmt.Errorf("not found"))
@@ -292,7 +303,7 @@ func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
 	git.On("branch -- feat/new refs/remotes/origin/main", "", nil)
-	git.On("worktree add -- /worktrees/feat-new feat/new", "", nil)
+	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/new", "")
@@ -309,13 +320,14 @@ func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 
 func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/new")
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/new", "", fmt.Errorf("not found"))
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("branch -- feat/new origin/develop", "", nil)
-	git.On("worktree add -- /worktrees/feat-new feat/new", "", nil)
+	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/new", "origin/develop")
@@ -336,7 +348,8 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 func TestManager_Remove(t *testing.T) {
 	t.Run("remove worktree and branch", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove /worktrees/feat-auth", "", nil)
+		path := branchPath("/worktrees", "feat/auth")
+		git.On("worktree remove "+path, "", nil)
 		git.On("branch -D -- feat/auth", "", nil)
 
 		mgr := NewManager(git, "/project", "/worktrees")
@@ -351,7 +364,8 @@ func TestManager_Remove(t *testing.T) {
 
 	t.Run("remove worktree keep branch", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove /worktrees/feat-auth", "", nil)
+		path := branchPath("/worktrees", "feat/auth")
+		git.On("worktree remove "+path, "", nil)
 
 		mgr := NewManager(git, "/project", "/worktrees")
 		_, err := mgr.Remove("feat/auth", false, false)
@@ -365,7 +379,8 @@ func TestManager_Remove(t *testing.T) {
 
 	t.Run("force remove dirty worktree", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove --force /worktrees/feat-auth", "", nil)
+		path := branchPath("/worktrees", "feat/auth")
+		git.On("worktree remove --force "+path, "", nil)
 		git.On("branch -D -- feat/auth", "", nil)
 
 		mgr := NewManager(git, "/project", "/worktrees")
@@ -373,14 +388,15 @@ func TestManager_Remove(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !git.wasCalled("worktree remove --force /worktrees/feat-auth") {
+		if !git.wasCalled("worktree remove --force " + path) {
 			t.Error("expected --force flag when force=true")
 		}
 	})
 
 	t.Run("non-force remove dirty worktree fails", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove /worktrees/feat-dirty", "", fmt.Errorf("git worktree remove: has uncommitted changes"))
+		path := branchPath("/worktrees", "feat/dirty")
+		git.On("worktree remove "+path, "", fmt.Errorf("git worktree remove: has uncommitted changes"))
 
 		mgr := NewManager(git, "/project", "/worktrees")
 		_, err := mgr.Remove("feat/dirty", true, false)
@@ -394,7 +410,8 @@ func TestManager_Remove(t *testing.T) {
 
 	t.Run("does not delete branch when no worktree matches", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove --force /worktrees/feat-missing", "", fmt.Errorf("git worktree remove: /worktrees/feat-missing is not a working tree"))
+		path := branchPath("/worktrees", "feat/missing")
+		git.On("worktree remove --force "+path, "", fmt.Errorf("%s", "git worktree remove: "+path+" is not a working tree"))
 		git.On("worktree list --porcelain",
 			"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 
@@ -410,10 +427,11 @@ func TestManager_Remove(t *testing.T) {
 
 	t.Run("deletes branch when stale worktree metadata still exists", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove --force /worktrees/feat-ghost", "", fmt.Errorf("git worktree remove: /worktrees/feat-ghost is not a working tree"))
+		path := branchPath("/worktrees", "feat/ghost")
+		git.On("worktree remove --force "+path, "", fmt.Errorf("%s", "git worktree remove: "+path+" is not a working tree"))
 		git.On("worktree list --porcelain",
 			"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
-				"worktree /worktrees/feat-ghost\nHEAD def\nbranch refs/heads/feat/ghost\n", nil)
+				"worktree "+path+"\nHEAD def\nbranch refs/heads/feat/ghost\n", nil)
 		git.On("worktree prune", "", nil)
 		git.On("branch -D -- feat/ghost", "", nil)
 
@@ -424,6 +442,53 @@ func TestManager_Remove(t *testing.T) {
 		}
 		if !result.BranchDeleted {
 			t.Error("expected branch deletion after ghost cleanup")
+		}
+	})
+
+	t.Run("uses registered worktree path before falling back to computed path", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("worktree list --porcelain",
+			"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
+				"worktree /worktrees/feat-auth\nHEAD def\nbranch refs/heads/feat/auth\n", nil)
+		git.On("worktree remove /worktrees/feat-auth", "", nil)
+		git.On("branch -D -- feat/auth", "", nil)
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		_, err := mgr.Remove("feat/auth", true, false)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !git.wasCalled("worktree remove /worktrees/feat-auth") {
+			t.Fatal("expected removal to target the registered worktree path")
+		}
+	})
+
+	t.Run("refuses to delete unregistered directories", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		worktreeDir := filepath.Join(projectRoot, "worktrees")
+		path := branchPath(worktreeDir, "feat/bogus")
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatalf("failed to create path: %v", err)
+		}
+
+		git := newMockGitRunner()
+		git.On("worktree list --porcelain",
+			"worktree "+projectRoot+"\nHEAD abc\nbranch refs/heads/main\n", nil)
+		git.On("worktree remove --force "+path, "", fmt.Errorf("%s", "git worktree remove: "+path+" is not a working tree"))
+
+		mgr := NewManager(git, projectRoot, worktreeDir)
+		_, err := mgr.Remove("feat/bogus", true, true)
+		if err == nil {
+			t.Fatal("expected error when path is not a registered worktree")
+		}
+		if !strings.Contains(err.Error(), "refusing to remove unregistered path") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("expected directory to remain on disk: %v", statErr)
+		}
+		if git.wasCalled("branch -D -- feat/bogus") {
+			t.Fatal("branch should not be deleted when the worktree path is unregistered")
 		}
 	})
 }
@@ -519,7 +584,7 @@ func TestIntegration_CreateWorktree_LocalBranch(t *testing.T) {
 	if result.Resolution != BranchLocal {
 		t.Errorf("expected resolution=local, got %s", result.Resolution)
 	}
-	expectedPath := filepath.Join(worktreeDir, "feat-local-test")
+	expectedPath := filepath.Join(worktreeDir, SanitizeBranchName("feat/local-test"))
 	if result.Path != expectedPath {
 		t.Errorf("expected path=%s, got %s", expectedPath, result.Path)
 	}

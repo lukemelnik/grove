@@ -56,10 +56,10 @@ func IsPresetLayout(layout string) bool {
 type layoutTier int
 
 const (
-	tierPreset        layoutTier = iota + 1 // Tier 1: preset name
-	tierPresetWithSize                      // Tier 2: preset + main_size
-	tierExplicitSplits                      // Tier 3: explicit split objects
-	tierRawLayout                           // Tier 4: raw tmux layout string
+	tierPreset         layoutTier = iota + 1 // Tier 1: preset name
+	tierPresetWithSize                       // Tier 2: preset + main_size
+	tierExplicitSplits                       // Tier 3: explicit split objects
+	tierRawLayout                            // Tier 4: raw tmux layout string
 )
 
 // detectTier determines the layout tier from tmux config.
@@ -94,9 +94,28 @@ func hasExplicitSplits(panes []config.Pane) bool {
 }
 
 // SessionName converts a branch name into a tmux-safe session/window name.
-// Replaces slashes with dashes, same as worktree sanitization.
 func SessionName(branch string) string {
 	return worktree.SanitizeBranchName(branch)
+}
+
+func legacySessionName(branch string) string {
+	sanitized := strings.ReplaceAll(branch, "/", "-")
+	if sanitized == ".." {
+		sanitized = "dotdot"
+	}
+	if sanitized == "." {
+		sanitized = "dot"
+	}
+	return sanitized
+}
+
+func sessionNameCandidates(branch string) []string {
+	canonical := SessionName(branch)
+	legacy := legacySessionName(branch)
+	if legacy == canonical {
+		return []string{canonical}
+	}
+	return []string{canonical, legacy}
 }
 
 // Options controls tmux workspace creation behavior.
@@ -214,11 +233,11 @@ func (m *Manager) HasWindow(name string) bool {
 
 // Destroy kills the tmux session or window for a branch.
 func (m *Manager) Destroy(branch string, cfg *config.TmuxConfig) error {
-	name := SessionName(branch)
 	mode := cfg.Mode
 	if mode == "" {
 		mode = "window"
 	}
+	name := m.ResolveName(branch, mode)
 
 	switch mode {
 	case "session":
@@ -233,6 +252,24 @@ func (m *Manager) Destroy(branch string, cfg *config.TmuxConfig) error {
 		}
 	}
 	return nil
+}
+
+// ResolveName returns the active tmux target name for a branch, falling back to
+// the legacy slash-to-dash mapping for existing sessions/windows.
+func (m *Manager) ResolveName(branch, mode string) string {
+	for _, candidate := range sessionNameCandidates(branch) {
+		switch mode {
+		case "session":
+			if m.HasSession(candidate) {
+				return candidate
+			}
+		default:
+			if m.HasWindow(candidate) {
+				return candidate
+			}
+		}
+	}
+	return SessionName(branch)
 }
 
 // createSession creates a new detached tmux session.

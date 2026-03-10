@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"grove/internal/tmux"
+	"grove/internal/worktree"
 )
 
 // setupCreateTestRepo creates a temporary git repo with an initial commit,
@@ -115,7 +116,7 @@ env:
 	}
 
 	// Verify worktree directory was created
-	expectedPath := filepath.Join(worktreeDir, "feat-test-create")
+	expectedPath := filepath.Join(worktreeDir, worktree.SanitizeBranchName("feat/test-create"))
 	if _, err := os.Stat(expectedPath); os.IsNotExist(err) {
 		t.Errorf("worktree directory should exist at %s", expectedPath)
 	}

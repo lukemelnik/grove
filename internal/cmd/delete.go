@@ -110,12 +110,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if cfg.Tmux != nil {
 		tmuxRunner := tmuxRunnerFactory()
 		tmuxMgr := tmux.NewManager(tmuxRunner)
-		name := tmux.SessionName(branch)
 
 		mode := cfg.Tmux.Mode
 		if mode == "" {
 			mode = "window"
 		}
+		name := tmuxMgr.ResolveName(branch, mode)
 
 		// Try to kill — ignore errors (session/window may not be running)
 		switch mode {

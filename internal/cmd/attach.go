@@ -73,13 +73,13 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// Step 4: Check if tmux session/window already exists
 	tmuxRunner := tmuxRunnerFactory()
 	tmuxMgr := tmux.NewManager(tmuxRunner)
-	name := tmux.SessionName(branch)
 
 	mode := tmuxCfg.Mode
 	if mode == "" {
 		mode = "window"
 	}
 
+	name := tmuxMgr.ResolveName(branch, mode)
 	sessionExists := tmuxMgr.HasSession(name)
 	windowExists := tmuxMgr.HasWindow(name)
 

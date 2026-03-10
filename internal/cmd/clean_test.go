@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,6 +47,37 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	if err != nil {
 		t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
 	}
+}
+
+type cleanMockGitRunner struct {
+	responses map[string]struct {
+		output string
+		err    error
+	}
+}
+
+func newCleanMockGitRunner() *cleanMockGitRunner {
+	return &cleanMockGitRunner{
+		responses: make(map[string]struct {
+			output string
+			err    error
+		}),
+	}
+}
+
+func (m *cleanMockGitRunner) On(args string, output string, err error) {
+	m.responses[args] = struct {
+		output string
+		err    error
+	}{output: output, err: err}
+}
+
+func (m *cleanMockGitRunner) Run(args ...string) (string, error) {
+	key := strings.Join(args, " ")
+	if resp, ok := m.responses[key]; ok {
+		return resp.output, resp.err
+	}
+	return "", fmt.Errorf("unexpected git command: %s", key)
 }
 
 func TestCleanCmd_DryRun(t *testing.T) {
@@ -298,6 +330,53 @@ func TestCleanCmd_NoStaleJSON(t *testing.T) {
 	}
 }
 
+func TestCleanCmd_AutoJSONRequiresForce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+	wtPath := filepath.Join(worktreeDir, "feat-auto-json")
+
+	gitRun(t, repoDir, "branch", "feat/auto-json")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/auto-json")
+
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	origTerminal := isTerminal
+	isTerminal = func(int) bool { return false }
+	t.Cleanup(func() { isTerminal = origTerminal })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected clean to require --force in auto-JSON mode")
+	}
+	if !ErrorAlreadyReported(err) {
+		t.Fatalf("expected structured error output, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), "requires --force") {
+		t.Fatalf("expected --force guidance, got:\n%s", buf.String())
+	}
+
+	gitCmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feat/auto-json")
+	gitCmd.Dir = repoDir
+	if _, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatal("branch should still exist after auto-JSON refusal")
+	}
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree path should still exist: %v", err)
+	}
+}
+
 func TestCleanCmd_MainBranchNeverCleaned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -430,6 +509,28 @@ func TestParseGoneBranches(t *testing.T) {
 		if got[i] != branch {
 			t.Errorf("expected %q at index %d, got %q", branch, i, got[i])
 		}
+	}
+}
+
+func TestFindStaleWorktrees_SkipsGoneBranchesWithUniqueCommits(t *testing.T) {
+	git := newCleanMockGitRunner()
+	git.On("worktree list --porcelain",
+		"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
+			"worktree /worktrees/feat-gone\nHEAD def\nbranch refs/heads/feat/gone\n", nil)
+	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
+	git.On("branch -vv",
+		"  feat/gone def5678 [origin/feat/gone: gone] local only\n"+
+			"* main 111aaaa [origin/main] latest\n", nil)
+	git.On("branch --merged main", "* main\n", nil)
+	git.On("rev-list --count main..feat/gone", "1", nil)
+
+	mgr := worktree.NewManager(git, "/project", "/worktrees")
+	stale, err := findStaleWorktrees(mgr)
+	if err != nil {
+		t.Fatalf("findStaleWorktrees failed: %v", err)
+	}
+	if len(stale) != 0 {
+		t.Fatalf("expected gone branch with unique commits to be skipped, got: %+v", stale)
 	}
 }
 
