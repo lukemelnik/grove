@@ -208,8 +208,12 @@ func (m *Manager) HasSession(name string) bool {
 // HasWindow checks if a tmux window with the given name exists.
 // It uses list-windows to search across all sessions.
 func (m *Manager) HasWindow(name string) bool {
-	_, err := m.runner.Run("list-windows", "-a", "-F", "#{window_name}", "-f", "#{==:#{window_name},"+name+"}")
-	return err == nil
+	out, err := m.runner.Run("list-windows", "-a", "-F", "#{window_name}", "-f", "#{==:#{window_name},"+name+"}")
+	if err != nil {
+		return false
+	}
+	// Some tmux versions return exit 0 with empty output when no windows match.
+	return strings.TrimSpace(out) != ""
 }
 
 // Destroy kills the tmux session or window for a branch.
@@ -506,9 +510,34 @@ func (m *Manager) doAttach(name, mode string) error {
 		return err
 	}
 
-	// Window mode outside tmux — attach to the session, which will show the window
-	_, err := m.runner.Run("select-window", "-t", name)
+	// Window mode outside tmux — find the session containing the window,
+	// select the window, then attach to the session.
+	// list-windows -a -F gives us "session_name:window_name" style info.
+	sessionName, err := m.findWindowSession(name)
+	if err != nil {
+		// Fallback: try attaching with the window name directly via target syntax
+		_, attachErr := m.runner.Run("attach", "-t", name)
+		return attachErr
+	}
+	// Select the window first, then attach to the parent session.
+	_, _ = m.runner.Run("select-window", "-t", sessionName+":"+name)
+	_, err = m.runner.Run("attach", "-t", sessionName)
 	return err
+}
+
+// findWindowSession returns the session name that contains the given window.
+func (m *Manager) findWindowSession(windowName string) (string, error) {
+	out, err := m.runner.Run("list-windows", "-a", "-F", "#{session_name}", "-f", "#{==:#{window_name},"+windowName+"}")
+	if err != nil {
+		return "", err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", fmt.Errorf("window %q not found", windowName)
+	}
+	// Take the first line in case multiple sessions have a window with the same name.
+	lines := strings.SplitN(out, "\n", 2)
+	return strings.TrimSpace(lines[0]), nil
 }
 
 // filterPanes returns only the panes that should be created, based on optional flags.
