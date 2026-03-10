@@ -1,10 +1,26 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
+
+	"grove/internal/config"
+	"grove/internal/env"
+	"grove/internal/ports"
+	"grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )
+
+// createOutput is the structured JSON output for grove create --json.
+type createOutput struct {
+	Worktree string            `json:"worktree"`
+	Branch   string            `json:"branch"`
+	Ports    map[string]int    `json:"ports"`
+	Env      map[string]string `json:"env"`
+}
 
 func newCreateCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -14,10 +30,7 @@ func newCreateCmd() *cobra.Command {
 tmux workspace. If a tmux config is present in .grove.yml, sets up
 a tmux session/window with panes and environment variables.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "grove create %s: not yet implemented\n", args[0])
-			return nil
-		},
+		RunE: runCreate,
 	}
 
 	cmd.Flags().StringArrayP("env", "e", nil, "environment variable override (KEY=VALUE, repeatable)")
@@ -30,3 +43,144 @@ a tmux session/window with panes and environment variables.`,
 
 	return cmd
 }
+
+func runCreate(cmd *cobra.Command, args []string) error {
+	branch := args[0]
+
+	// Parse flags
+	envOverrides, _ := cmd.Flags().GetStringArray("env")
+	fromRef, _ := cmd.Flags().GetString("from")
+	noTmux, _ := cmd.Flags().GetBool("no-tmux")
+	jsonOutput, _ := cmd.Flags().GetBool("json")
+	// --all, --with, and --attach are accepted but no-op until Sprint 4
+	_, _ = cmd.Flags().GetBool("all")
+	_, _ = cmd.Flags().GetStringArray("with")
+	_, _ = cmd.Flags().GetBool("attach")
+
+	// Step 1: Discover and load config
+	cwd, err := getWorkingDir()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	configPath, projectRoot, err := config.Discover(cwd)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Hash branch -> assign ports
+	var portAssignment *ports.Assignment
+	if len(cfg.Services) > 0 {
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, nil)
+		if err != nil {
+			return fmt.Errorf("assigning ports: %w", err)
+		}
+	} else {
+		portAssignment = &ports.Assignment{Ports: map[string]int{}}
+	}
+
+	// Step 3: Resolve environment variables
+	overrides, err := env.ParseOverrides(envOverrides)
+	if err != nil {
+		return fmt.Errorf("parsing env overrides: %w", err)
+	}
+
+	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot, overrides)
+	if err != nil {
+		return fmt.Errorf("resolving environment: %w", err)
+	}
+
+	// Step 4: Create worktree with branch resolution
+	git := worktree.NewGitRunner(projectRoot)
+	mgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+
+	result, err := mgr.Create(branch, fromRef)
+	if err != nil {
+		return fmt.Errorf("creating worktree: %w", err)
+	}
+
+	// Step 5: Output results
+	hasTmux := cfg.Tmux != nil && !noTmux
+
+	if jsonOutput {
+		return outputJSON(cmd, result, portAssignment.Ports, resolvedEnv)
+	}
+
+	// No tmux config, or --no-tmux: print info to stdout
+	if !hasTmux {
+		return outputText(cmd, result, portAssignment.Ports, resolvedEnv)
+	}
+
+	// Has tmux config but tmux integration is Sprint 4.
+	// For now, print info just like no-tmux mode.
+	return outputText(cmd, result, portAssignment.Ports, resolvedEnv)
+}
+
+func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string) error {
+	out := createOutput{
+		Worktree: result.Path,
+		Branch:   result.Branch,
+		Ports:    assignedPorts,
+		Env:      resolvedEnv,
+	}
+	data, err := json.MarshalIndent(out, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling JSON: %w", err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	return nil
+}
+
+func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string) error {
+	w := cmd.OutOrStdout()
+
+	if result.Created {
+		fmt.Fprintf(w, "Created worktree for branch %q (%s)\n", result.Branch, result.Resolution)
+	} else {
+		fmt.Fprintf(w, "Reusing existing worktree for branch %q\n", result.Branch)
+	}
+
+	fmt.Fprintf(w, "Worktree: %s\n", result.Path)
+
+	if len(assignedPorts) > 0 {
+		fmt.Fprintln(w, "Ports:")
+		// Sort port names for deterministic output
+		names := make([]string, 0, len(assignedPorts))
+		for name := range assignedPorts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(w, "  %s: %d\n", name, assignedPorts[name])
+		}
+	}
+
+	if len(resolvedEnv) > 0 {
+		fmt.Fprintln(w, "Env:")
+		// Sort env keys for deterministic output
+		keys := make([]string, 0, len(resolvedEnv))
+		for k := range resolvedEnv {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			// Only print env vars that aren't too long
+			v := resolvedEnv[k]
+			if len(v) > 100 {
+				v = v[:97] + "..."
+			}
+			fmt.Fprintf(w, "  %s=%s\n", k, v)
+		}
+	}
+
+	return nil
+}
+
+// getWorkingDir returns the current working directory.
+// This is a var so tests can override it.
+var getWorkingDir = os.Getwd
