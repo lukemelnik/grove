@@ -2,6 +2,12 @@ package cmd
 
 import (
 	"fmt"
+	"os/exec"
+	"strings"
+
+	"grove/internal/config"
+	"grove/internal/tmux"
+	"grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )
@@ -13,14 +19,138 @@ func newDeleteCmd() *cobra.Command {
 		Long: `Remove a worktree and its tmux session/window. Checks for open PRs
 via gh (if available) and warns before deleting branches with open PRs.`,
 		Args: cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			fmt.Fprintf(cmd.OutOrStdout(), "grove delete %s: not yet implemented\n", args[0])
-			return nil
-		},
+		RunE: runDelete,
 	}
 
 	cmd.Flags().Bool("force", false, "skip PR check and delete anyway")
 	cmd.Flags().Bool("keep-branch", false, "remove worktree but keep the git branch")
 
 	return cmd
+}
+
+// ghCommandRunner runs gh CLI commands. It is a var so tests can override it.
+var ghCommandRunner = func(args ...string) (string, error) {
+	cmd := exec.Command("gh", args...)
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// ghAvailable checks if the gh CLI is installed.
+var ghAvailable = func() bool {
+	_, err := exec.LookPath("gh")
+	return err == nil
+}
+
+func runDelete(cmd *cobra.Command, args []string) error {
+	branch := args[0]
+
+	force, _ := cmd.Flags().GetBool("force")
+	keepBranch, _ := cmd.Flags().GetBool("keep-branch")
+
+	// Step 1: Discover and load config
+	cwd, err := getWorkingDir()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	configPath, projectRoot, err := config.Discover(cwd)
+	if err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+
+	// Step 2: Check for open PRs (unless --force)
+	if !force {
+		if ghAvailable() {
+			hasOpenPR, prNum, err := checkOpenPRs(branch)
+			if err != nil {
+				// Non-fatal — just warn and continue
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for open PRs: %v\n", err)
+			} else if hasOpenPR {
+				return fmt.Errorf("branch %q has an open PR (#%s) — use --force to delete anyway", branch, prNum)
+			}
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Note: skipping PR check — gh not found")
+		}
+	}
+
+	// Step 3: Remove tmux session/window (if tmux config exists)
+	if cfg.Tmux != nil {
+		tmuxRunner := tmuxRunnerFactory()
+		tmuxMgr := tmux.NewManager(tmuxRunner)
+		name := tmux.SessionName(branch)
+
+		mode := cfg.Tmux.Mode
+		if mode == "" {
+			mode = "window"
+		}
+
+		// Try to kill — ignore errors (session/window may not be running)
+		switch mode {
+		case "session":
+			if tmuxMgr.HasSession(name) {
+				if err := tmuxMgr.Destroy(branch, cfg.Tmux); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux session: %v\n", err)
+				}
+			}
+		case "window":
+			if tmuxMgr.HasWindow(name) {
+				if err := tmuxMgr.Destroy(branch, cfg.Tmux); err != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux window: %v\n", err)
+				}
+			}
+		}
+	}
+
+	// Step 4: Remove git worktree and optionally delete branch
+	git := worktree.NewGitRunner(projectRoot)
+	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+
+	deleteBranch := !keepBranch
+	if err := wtMgr.Remove(branch, deleteBranch); err != nil {
+		return fmt.Errorf("removing worktree: %w", err)
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "Deleted worktree for branch %q\n", branch)
+	if deleteBranch {
+		fmt.Fprintf(w, "Deleted branch %q\n", branch)
+	} else {
+		fmt.Fprintf(w, "Kept branch %q\n", branch)
+	}
+
+	return nil
+}
+
+// checkOpenPRs checks if the branch has any open pull requests.
+// Returns (hasOpenPR, prNumber, error).
+func checkOpenPRs(branch string) (bool, string, error) {
+	out, err := ghCommandRunner("pr", "list", "--head", branch, "--state", "open", "--json", "number", "--limit", "1")
+	if err != nil {
+		return false, "", fmt.Errorf("running gh pr list: %w", err)
+	}
+
+	out = strings.TrimSpace(out)
+	// Empty array means no open PRs
+	if out == "[]" || out == "" {
+		return false, "", nil
+	}
+
+	// Extract the PR number from the JSON (simple parsing — it's just [{"number":123}])
+	// We don't import encoding/json here to keep it simple; the format is predictable.
+	if idx := strings.Index(out, "\"number\":"); idx >= 0 {
+		numStart := idx + len("\"number\":")
+		numEnd := numStart
+		for numEnd < len(out) && out[numEnd] != ',' && out[numEnd] != '}' {
+			numEnd++
+		}
+		return true, strings.TrimSpace(out[numStart:numEnd]), nil
+	}
+
+	// Fallback: if we got non-empty output but couldn't parse, there's probably a PR
+	return true, "?", nil
 }
