@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -434,16 +435,16 @@ func TestParse_MicroservicesConfig(t *testing.T) {
 services:
   gateway:
     port: 8080
-    env: PORT
+    env: GATEWAY_PORT
   users:
     port: 8081
-    env: PORT
+    env: USERS_PORT
   billing:
     port: 8082
-    env: PORT
+    env: BILLING_PORT
   frontend:
     port: 3000
-    env: PORT
+    env: FRONTEND_PORT
 
 env:
   API_URL: "http://localhost:{{gateway.port}}"
@@ -488,6 +489,25 @@ tmux:
 	}
 	if len(cfg.Tmux.Panes) != 1 {
 		t.Fatalf("expected 1 pane, got %d", len(cfg.Tmux.Panes))
+	}
+}
+
+func TestParse_DuplicateEnvVarName(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port: 4000
+    env: PORT
+  web:
+    port: 3000
+    env: PORT
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for duplicate env var name")
+	}
+	if !strings.Contains(err.Error(), "both use env var") {
+		t.Errorf("expected 'both use env var' in error, got: %v", err)
 	}
 }
 

@@ -4,7 +4,9 @@ package config
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -139,6 +141,7 @@ func Parse(data []byte) (*Config, error) {
 // validate checks that the config is well-formed.
 func validate(cfg *Config) error {
 	// Validate services
+	envSeen := make(map[string]string) // env var name -> service name
 	for name, svc := range cfg.Services {
 		if svc.Port <= 0 || svc.Port > 65535 {
 			return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port)
@@ -146,6 +149,10 @@ func validate(cfg *Config) error {
 		if svc.Env == "" {
 			return fmt.Errorf("service %q: env var name is required", name)
 		}
+		if other, exists := envSeen[svc.Env]; exists {
+			return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Env)
+		}
+		envSeen[svc.Env] = name
 	}
 
 	// Validate tmux config
@@ -178,24 +185,62 @@ func validatePanes(panes []Pane) error {
 
 // Discover walks up from startDir looking for a .grove.yml file.
 // Returns the path to the config file and the project root directory.
-// If no config file is found, returns an error.
+// If no config file is found in the directory tree, it checks whether
+// we're inside a git worktree and looks in the main repo root. This
+// lets you run grove commands from any worktree even if .grove.yml is
+// untracked (only exists in the main repo).
 func Discover(startDir string) (configPath string, projectRoot string, err error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
 		return "", "", fmt.Errorf("resolving absolute path: %w", err)
 	}
 
+	// First: walk up the directory tree
+	cur := dir
 	for {
-		candidate := filepath.Join(dir, ConfigFileName)
+		candidate := filepath.Join(cur, ConfigFileName)
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate, dir, nil
+			return candidate, cur, nil
 		}
 
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			// Reached filesystem root without finding config
-			return "", "", fmt.Errorf("no %s found (searched from %s to filesystem root)", ConfigFileName, startDir)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
 		}
-		dir = parent
+		cur = parent
 	}
+
+	// Fallback: if we're in a git worktree, check the main repo root.
+	// git rev-parse --git-common-dir returns the main repo's .git dir.
+	mainRoot, err := gitMainRepoRoot(startDir)
+	if err == nil && mainRoot != "" {
+		candidate := filepath.Join(mainRoot, ConfigFileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, mainRoot, nil
+		}
+	}
+
+	return "", "", fmt.Errorf("no %s found (searched from %s to filesystem root)", ConfigFileName, startDir)
+}
+
+// gitMainRepoRoot returns the root directory of the main git repo
+// (not a worktree) by resolving --git-common-dir.
+func gitMainRepoRoot(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--git-common-dir")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	gitDir := strings.TrimSpace(string(out))
+	if gitDir == "" {
+		return "", fmt.Errorf("empty git-common-dir")
+	}
+	// --git-common-dir may return a relative path
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(dir, gitDir)
+	}
+	// The repo root is the parent of the .git directory
+	root := filepath.Dir(gitDir)
+	return filepath.Clean(root), nil
 }
