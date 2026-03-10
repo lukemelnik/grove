@@ -81,7 +81,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	// Step 2: Hash branch -> assign ports
 	var portAssignment *ports.Assignment
 	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, nil)
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset)
 		if err != nil {
 			return fmt.Errorf("assigning ports: %w", err)
 		}
@@ -110,25 +110,33 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 5: Output results (always print info for text/json mode)
-	hasTmux := cfg.Tmux != nil && !noTmux
-
 	if jsonOutput {
 		return outputJSON(cmd, result, portAssignment.Ports, resolvedEnv)
 	}
 
 	// Print worktree info
-	if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv); err != nil {
+	if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg, overrides); err != nil {
 		return err
 	}
 
-	// Step 6: Tmux workspace setup
-	if hasTmux {
+	// Step 6: Tmux workspace setup (default to empty config if not specified)
+	if !noTmux {
+		tmuxCfg := cfg.Tmux
+		if tmuxCfg == nil {
+			tmuxCfg = &config.TmuxConfig{}
+		}
+
+		// Split env: shared (.env files) via set-environment, managed (ports/overrides) via -e flags
+		managedKeys := env.ManagedKeys(cfg, overrides)
+		sharedEnv, managedEnv := env.SplitEnv(resolvedEnv, managedKeys)
+
 		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
 		tmuxOpts := tmux.Options{
 			Branch:       branch,
 			WorktreePath: result.Path,
-			Env:          resolvedEnv,
-			TmuxConfig:   cfg.Tmux,
+			SharedEnv:    sharedEnv,
+			ManagedEnv:   managedEnv,
+			TmuxConfig:   tmuxCfg,
 			IncludeAll:   includeAll,
 			IncludeWith:  includeWith,
 			Attach:       attach,
@@ -136,6 +144,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if err := tmuxMgr.Create(tmuxOpts); err != nil {
 			return fmt.Errorf("setting up tmux workspace: %w", err)
 		}
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "\n  cd %s\n", result.Path)
 	}
 
 	return nil
@@ -156,7 +166,7 @@ func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 	return nil
 }
 
-func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string) error {
+func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string, cfg *config.Config, overrides map[string]string) error {
 	w := cmd.OutOrStdout()
 
 	if result.Created {
@@ -180,17 +190,32 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 		}
 	}
 
-	if len(resolvedEnv) > 0 {
+	// Only show grove-managed env vars in text output (port vars + env block + overrides).
+	// The full set (including .env file pass-through) is available via --json or grove status.
+	managedEnv := make(map[string]string)
+	for _, svc := range cfg.Services {
+		if v, ok := resolvedEnv[svc.Env]; ok {
+			managedEnv[svc.Env] = v
+		}
+	}
+	for k := range cfg.Env {
+		if v, ok := resolvedEnv[k]; ok {
+			managedEnv[k] = v
+		}
+	}
+	for k, v := range overrides {
+		managedEnv[k] = v
+	}
+
+	if len(managedEnv) > 0 {
 		fmt.Fprintln(w, "Env:")
-		// Sort env keys for deterministic output
-		keys := make([]string, 0, len(resolvedEnv))
-		for k := range resolvedEnv {
+		keys := make([]string, 0, len(managedEnv))
+		for k := range managedEnv {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			// Only print env vars that aren't too long
-			v := resolvedEnv[k]
+			v := managedEnv[k]
 			if len(v) > 100 {
 				v = v[:97] + "..."
 			}

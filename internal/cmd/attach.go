@@ -64,10 +64,10 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no worktree found for branch %q — did you mean `grove create %s`?", branch, branch)
 	}
 
-	// Step 3: If no tmux config, just report the worktree path
-	if cfg.Tmux == nil {
-		fmt.Fprintf(cmd.OutOrStdout(), "Worktree exists at %s but no tmux configuration in .grove.yml\n", found.Path)
-		return nil
+	// Step 3: Default to empty tmux config if not specified
+	tmuxCfg := cfg.Tmux
+	if tmuxCfg == nil {
+		tmuxCfg = &config.TmuxConfig{}
 	}
 
 	// Step 4: Check if tmux session/window already exists
@@ -75,7 +75,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	tmuxMgr := tmux.NewManager(tmuxRunner)
 	name := tmux.SessionName(branch)
 
-	mode := cfg.Tmux.Mode
+	mode := tmuxCfg.Mode
 	if mode == "" {
 		mode = "window"
 	}
@@ -93,7 +93,7 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// Resolve ports and env for this branch
 	var portAssignment *ports.Assignment
 	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, nil)
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset)
 		if err != nil {
 			return fmt.Errorf("assigning ports: %w", err)
 		}
@@ -106,11 +106,15 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("resolving environment: %w", err)
 	}
 
+	managedKeys := env.ManagedKeys(cfg, nil)
+	sharedEnv, managedEnv := env.SplitEnv(resolvedEnv, managedKeys)
+
 	tmuxOpts := tmux.Options{
 		Branch:       branch,
 		WorktreePath: found.Path,
-		Env:          resolvedEnv,
-		TmuxConfig:   cfg.Tmux,
+		SharedEnv:    sharedEnv,
+		ManagedEnv:   managedEnv,
+		TmuxConfig:   tmuxCfg,
 		IncludeAll:   false,
 		IncludeWith:  nil,
 		Attach:       true,

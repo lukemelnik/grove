@@ -93,10 +93,7 @@ services:
 		t.Fatalf("attach command failed: %v\nOutput: %s", err, buf.String())
 	}
 
-	// No tmux config, so should just print info
-	if !strings.Contains(buf.String(), "no tmux configuration") {
-		t.Errorf("expected 'no tmux configuration' message, got:\n%s", buf.String())
-	}
+	// No tmux config — should still succeed using default tmux config
 }
 
 func TestAttachCmd_MissingBranchArg(t *testing.T) {
