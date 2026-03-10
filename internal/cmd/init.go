@@ -59,7 +59,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 	cfg.WorktreeDir = wtDir
 
 	// --- Env files ---
-	fmt.Fprintf(w, "\nEnv files to include (comma-separated, e.g. .env,apps/api/.env) [.env]: ")
+	fmt.Fprintf(w, "\nEnv files to include (comma or space separated, e.g. .env apps/api/.env) [.env]: ")
 	envFilesInput := scanLine(scanner)
 	if envFilesInput == "" {
 		// Default: include .env if it exists
@@ -67,9 +67,11 @@ func runInit(cmd *cobra.Command, args []string) error {
 			cfg.EnvFiles = []string{".env"}
 		}
 	} else {
-		parts := strings.Split(envFilesInput, ",")
+		// Split on commas, spaces, or both
+		parts := strings.FieldsFunc(envFilesInput, func(r rune) bool {
+			return r == ',' || r == ' '
+		})
 		for _, p := range parts {
-			p = strings.TrimSpace(p)
 			if p != "" {
 				cfg.EnvFiles = append(cfg.EnvFiles, p)
 			}
