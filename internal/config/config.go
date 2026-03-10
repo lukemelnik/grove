@@ -14,6 +14,28 @@ import (
 // ConfigFileName is the name of the Grove configuration file.
 const ConfigFileName = ".grove.yml"
 
+// BlockedPorts contains browser-restricted ports that should never be assigned.
+// See https://fetch.spec.whatwg.org/#bad-port (Chromium/Firefox blocked ports).
+var BlockedPorts = map[int]bool{
+	1: true, 7: true, 9: true, 11: true, 13: true, 15: true, 17: true,
+	19: true, 20: true, 21: true, 22: true, 23: true, 25: true, 37: true,
+	42: true, 43: true, 53: true, 77: true, 79: true, 87: true, 95: true,
+	101: true, 102: true, 103: true, 104: true, 109: true, 110: true,
+	111: true, 113: true, 115: true, 117: true, 119: true, 123: true,
+	135: true, 139: true, 143: true, 179: true, 389: true, 427: true,
+	465: true, 512: true, 513: true, 514: true, 515: true, 526: true,
+	530: true, 531: true, 532: true, 540: true, 548: true, 556: true,
+	563: true, 587: true, 601: true, 636: true, 993: true, 995: true,
+	2049: true, 3659: true, 4045: true, 4190: true, 5060: true, 5061: true,
+	6000: true, 6566: true, 6665: true, 6666: true, 6667: true, 6668: true,
+	6669: true, 6697: true, 10080: true,
+}
+
+// IsPortBlocked returns true if the port is in the browser-restricted list.
+func IsPortBlocked(port int) bool {
+	return BlockedPorts[port]
+}
+
 // Config represents the top-level .grove.yml configuration.
 type Config struct {
 	// WorktreeDir is where worktrees are created, relative to the project root.
@@ -77,12 +99,26 @@ type Pane struct {
 	// Size is the size of this pane (e.g., "70%"), used in Tier 3 explicit splits.
 	Size string `yaml:"size,omitempty"`
 
+	// Autorun controls whether the command is executed automatically.
+	// Defaults to true. When false, the command is typed but not executed,
+	// letting the user press Enter when ready.
+	Autorun *bool `yaml:"autorun,omitempty"`
+
 	// Split defines a nested split direction ("vertical" or "horizontal").
 	// When set, this pane is a container with sub-panes.
 	Split string `yaml:"split,omitempty"`
 
 	// Panes are the nested panes inside a split container.
 	Panes []Pane `yaml:"panes,omitempty"`
+}
+
+// ShouldAutorun returns whether the pane command should be executed automatically.
+// Defaults to true when Autorun is not set.
+func (p *Pane) ShouldAutorun() bool {
+	if p.Autorun == nil {
+		return true
+	}
+	return *p.Autorun
 }
 
 // UnmarshalYAML implements custom unmarshaling for Pane to support both
@@ -145,6 +181,9 @@ func Validate(cfg *Config) error {
 	for name, svc := range cfg.Services {
 		if svc.Port <= 0 || svc.Port > 65535 {
 			return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port)
+		}
+		if IsPortBlocked(svc.Port) {
+			return fmt.Errorf("service %q: port %d is browser-restricted (blocked by Chromium/Firefox) — pick a different base port", name, svc.Port)
 		}
 		if svc.Env == "" {
 			return fmt.Errorf("service %q: env var name is required", name)

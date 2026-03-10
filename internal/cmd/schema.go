@@ -21,8 +21,9 @@ env_files:
   - .env
   - apps/api/.env
 
-# Services with base ports. Each branch gets a deterministic offset
-# added to these base ports, so branches never collide.
+# Services with base ports. The default branch (main/master) uses these
+# ports directly. Other branches get a deterministic offset added,
+# so branches never collide.
 #
 # Required fields:
 #   port: base port number (1-65535)
@@ -69,6 +70,7 @@ tmux:
   #   - cmd: pnpm dev
   #     name: dev          # identifier for --with flag
   #     optional: true     # skipped unless --all or --with dev
+  #     autorun: false     # type command but don't press Enter (default: true)
   #
   # Split form — nested pane layout (Tier 3):
   #   - split: vertical    # or "horizontal"
