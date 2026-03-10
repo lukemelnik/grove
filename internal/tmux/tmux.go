@@ -333,8 +333,7 @@ func effectiveLayout(cfg *config.TmuxConfig) string {
 func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane, layout, mainSize string, env map[string]string) error {
 	// First pane already exists in the session/window. Send command to it.
 	if panes[0].Cmd != "" {
-		_, err := m.runner.Run("send-keys", "-t", target, panes[0].Cmd, "Enter")
-		if err != nil {
+		if err := m.sendCommand(target, panes[0].Cmd, panes[0].ShouldAutorun()); err != nil {
 			return fmt.Errorf("sending command to first pane: %w", err)
 		}
 	}
@@ -349,8 +348,7 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
 		if panes[i].Cmd != "" {
-			_, err = m.runner.Run("send-keys", "-t", target, panes[i].Cmd, "Enter")
-			if err != nil {
+			if err := m.sendCommand(target, panes[i].Cmd, panes[i].ShouldAutorun()); err != nil {
 				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
@@ -386,103 +384,80 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 }
 
 // createPanesExplicit handles Tier 3: explicit split objects.
+//
+// The key insight is that tmux's split-window always splits the *currently selected*
+// pane. To build nested layouts correctly, we must create all sibling splits first
+// (establishing the structural layout), then recurse into each region. Otherwise,
+// depth-first processing leaves the active pane inside a container, causing the next
+// sibling to split the wrong pane.
 func (m *Manager) createPanesExplicit(target, workdir string, panes []config.Pane, env map[string]string) error {
-	// Build layout from the pane tree.
-	// The first pane is already created with the session/window.
-	// We walk the pane tree depth-first, creating splits as needed.
-	first := true
-	return m.walkPanes(target, workdir, panes, "h", &first, true, env)
+	// Get the initial pane ID (the one created with the session/window)
+	initialID, err := m.runner.Run("display-message", "-p", "-t", target, "#{pane_id}")
+	if err != nil {
+		return fmt.Errorf("getting initial pane id: %w", err)
+	}
+	return m.walkPanes(strings.TrimSpace(initialID), workdir, panes, "h", env)
 }
 
-// walkPanes recursively creates panes from a split tree.
+// walkPanes recursively creates panes from a split tree using pane ID targeting.
+// parentPaneID is the tmux pane ID to split from (e.g. "%0").
 // splitDir is "h" for horizontal (left-right) or "v" for vertical (top-bottom).
-// first tracks whether the very first pane has been used (it already exists in the
-// session/window). useExisting means the current pane was just created by a parent
-// container's split-window and should be used directly for the first child.
-func (m *Manager) walkPanes(target, workdir string, panes []config.Pane, splitDir string, first *bool, useExisting bool, env map[string]string) error {
+//
+// Phase 1: Create all sibling splits to establish structure, collecting pane IDs.
+// Phase 2: Fill each pane with its command or recurse into containers.
+func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, splitDir string, env map[string]string) error {
+	if len(panes) == 0 {
+		return nil
+	}
+
 	eFlags := envFlags(env)
+
+	// Phase 1: Create structural splits for all siblings.
+	// First pane reuses parentPaneID; remaining panes split from it.
+	paneIDs := make([]string, len(panes))
+	paneIDs[0] = parentPaneID
+
+	for i := 1; i < len(panes); i++ {
+		splitArgs := []string{"split-window", "-" + splitDir, "-t", parentPaneID, "-P", "-F", "#{pane_id}"}
+		splitArgs = append(splitArgs, eFlags...)
+		splitArgs = append(splitArgs, "-c", workdir)
+		if panes[i].Size != "" {
+			pct, err := parseSizePercent(panes[i].Size)
+			if err == nil {
+				splitArgs = append(splitArgs, "-p", strconv.Itoa(pct))
+			}
+		}
+		id, err := m.runner.Run(splitArgs...)
+		if err != nil {
+			return fmt.Errorf("splitting pane %d: %w", i, err)
+		}
+		paneIDs[i] = strings.TrimSpace(id)
+	}
+
+	// Phase 2: Fill each pane with content or recurse into containers.
 	for i, p := range panes {
 		if p.Split != "" {
-			// This is a container — recurse into nested panes
 			nestedDir := "v"
 			if p.Split == "horizontal" {
 				nestedDir = "h"
 			}
-
-			if *first {
-				// First pane in the tree — the container's first child uses the existing pane.
-				if err := m.walkPanes(target, workdir, p.Panes, nestedDir, first, true, env); err != nil {
-					return err
-				}
-			} else if useExisting && i == 0 {
-				// Reuse the pane just created by a parent container split.
-				if err := m.walkPanes(target, workdir, p.Panes, nestedDir, first, true, env); err != nil {
-					return err
-				}
-			} else {
-				// Create a split for this container, then recurse.
-				splitArgs := []string{"split-window", "-" + splitDir, "-t", target}
-				splitArgs = append(splitArgs, eFlags...)
-				splitArgs = append(splitArgs, "-c", workdir)
-				if p.Size != "" {
-					pct, err := parseSizePercent(p.Size)
-					if err == nil {
-						splitArgs = append(splitArgs, "-p", strconv.Itoa(pct))
-					}
-				}
-				_, err := m.runner.Run(splitArgs...)
-				if err != nil {
-					return fmt.Errorf("creating split container: %w", err)
-				}
-				// The first child of this container reuses the pane we just created.
-				if err := m.walkPanes(target, workdir, p.Panes, nestedDir, first, true, env); err != nil {
-					return err
-				}
+			if err := m.walkPanes(paneIDs[i], workdir, p.Panes, nestedDir, env); err != nil {
+				return err
 			}
 			continue
 		}
 
-		// Leaf pane
-		if *first {
-			// First pane already exists in the session/window. Just send command.
-			*first = false
-			if p.Cmd != "" {
-				_, err := m.runner.Run("send-keys", "-t", target, p.Cmd, "Enter")
-				if err != nil {
-					return fmt.Errorf("sending command to first pane: %w", err)
-				}
-			}
-		} else if useExisting && i == 0 {
-			// Reuse the pane just created by a parent container split.
-			if p.Cmd != "" {
-				_, err := m.runner.Run("send-keys", "-t", target, p.Cmd, "Enter")
-				if err != nil {
-					return fmt.Errorf("sending command to reused pane: %w", err)
-				}
-			}
-		} else {
-			// Create a new pane via split with -e flags for env
-			splitArgs := []string{"split-window", "-" + splitDir, "-t", target}
-			splitArgs = append(splitArgs, eFlags...)
-			splitArgs = append(splitArgs, "-c", workdir)
-			if p.Size != "" {
-				pct, err := parseSizePercent(p.Size)
-				if err == nil {
-					splitArgs = append(splitArgs, "-p", strconv.Itoa(pct))
-				}
-			}
-			_, err := m.runner.Run(splitArgs...)
-			if err != nil {
-				return fmt.Errorf("splitting pane %d: %w", i, err)
-			}
-			if p.Cmd != "" {
-				_, err = m.runner.Run("send-keys", "-t", target, p.Cmd, "Enter")
-				if err != nil {
-					return fmt.Errorf("sending command to pane %d: %w", i, err)
-				}
+		// Leaf pane — send command
+		if p.Cmd != "" {
+			if err := m.sendCommand(paneIDs[i], p.Cmd, p.ShouldAutorun()); err != nil {
+				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
 	}
+
+	// Select the first pane in this group
+	_, _ = m.runner.Run("select-pane", "-t", paneIDs[0])
+
 	return nil
 }
 
@@ -490,8 +465,7 @@ func (m *Manager) walkPanes(target, workdir string, panes []config.Pane, splitDi
 func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, rawLayout string, env map[string]string) error {
 	// First pane already exists. Send command.
 	if len(panes) > 0 && panes[0].Cmd != "" {
-		_, err := m.runner.Run("send-keys", "-t", target, panes[0].Cmd, "Enter")
-		if err != nil {
+		if err := m.sendCommand(target, panes[0].Cmd, panes[0].ShouldAutorun()); err != nil {
 			return fmt.Errorf("sending command to first pane: %w", err)
 		}
 	}
@@ -507,8 +481,7 @@ func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, ra
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
 		if panes[i].Cmd != "" {
-			_, err = m.runner.Run("send-keys", "-t", target, panes[i].Cmd, "Enter")
-			if err != nil {
+			if err := m.sendCommand(target, panes[i].Cmd, panes[i].ShouldAutorun()); err != nil {
 				return fmt.Errorf("sending command to pane %d: %w", i, err)
 			}
 		}
@@ -655,6 +628,17 @@ func envFlags(env map[string]string) []string {
 		args = append(args, "-e", k+"="+env[k])
 	}
 	return args
+}
+
+// sendCommand sends a command to a tmux pane. If autorun is true, it presses Enter
+// to execute the command. If false, the command is typed but left for the user to run.
+func (m *Manager) sendCommand(target, cmd string, autorun bool) error {
+	args := []string{"send-keys", "-t", target, cmd}
+	if autorun {
+		args = append(args, "Enter")
+	}
+	_, err := m.runner.Run(args...)
+	return err
 }
 
 // sortedKeys returns the keys of a map in sorted order.
