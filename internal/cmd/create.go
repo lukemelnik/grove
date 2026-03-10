@@ -9,6 +9,7 @@ import (
 	"grove/internal/config"
 	"grove/internal/env"
 	"grove/internal/ports"
+	"grove/internal/tmux"
 	"grove/internal/worktree"
 
 	"github.com/spf13/cobra"
@@ -44,6 +45,11 @@ a tmux session/window with panes and environment variables.`,
 	return cmd
 }
 
+// tmuxRunnerFactory creates a tmux runner. It is a var so tests can override it.
+var tmuxRunnerFactory = func() tmux.Runner {
+	return tmux.NewRunner()
+}
+
 func runCreate(cmd *cobra.Command, args []string) error {
 	branch := args[0]
 
@@ -52,10 +58,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	fromRef, _ := cmd.Flags().GetString("from")
 	noTmux, _ := cmd.Flags().GetBool("no-tmux")
 	jsonOutput, _ := cmd.Flags().GetBool("json")
-	// --all, --with, and --attach are accepted but no-op until Sprint 4
-	_, _ = cmd.Flags().GetBool("all")
-	_, _ = cmd.Flags().GetStringArray("with")
-	_, _ = cmd.Flags().GetBool("attach")
+	includeAll, _ := cmd.Flags().GetBool("all")
+	includeWith, _ := cmd.Flags().GetStringArray("with")
+	attach, _ := cmd.Flags().GetBool("attach")
 
 	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
@@ -97,28 +102,43 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	// Step 4: Create worktree with branch resolution
 	git := worktree.NewGitRunner(projectRoot)
-	mgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
 
-	result, err := mgr.Create(branch, fromRef)
+	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {
 		return fmt.Errorf("creating worktree: %w", err)
 	}
 
-	// Step 5: Output results
+	// Step 5: Output results (always print info for text/json mode)
 	hasTmux := cfg.Tmux != nil && !noTmux
 
 	if jsonOutput {
 		return outputJSON(cmd, result, portAssignment.Ports, resolvedEnv)
 	}
 
-	// No tmux config, or --no-tmux: print info to stdout
-	if !hasTmux {
-		return outputText(cmd, result, portAssignment.Ports, resolvedEnv)
+	// Print worktree info
+	if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv); err != nil {
+		return err
 	}
 
-	// Has tmux config but tmux integration is Sprint 4.
-	// For now, print info just like no-tmux mode.
-	return outputText(cmd, result, portAssignment.Ports, resolvedEnv)
+	// Step 6: Tmux workspace setup
+	if hasTmux {
+		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
+		tmuxOpts := tmux.Options{
+			Branch:       branch,
+			WorktreePath: result.Path,
+			Env:          resolvedEnv,
+			TmuxConfig:   cfg.Tmux,
+			IncludeAll:   includeAll,
+			IncludeWith:  includeWith,
+			Attach:       attach,
+		}
+		if err := tmuxMgr.Create(tmuxOpts); err != nil {
+			return fmt.Errorf("setting up tmux workspace: %w", err)
+		}
+	}
+
+	return nil
 }
 
 func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string) error {
