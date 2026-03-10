@@ -166,6 +166,38 @@ func Resolve(cfg *config.Config, ports map[string]int, projectRoot string, overr
 	return result, nil
 }
 
+// ManagedKeys returns the set of env var keys that are grove-managed
+// (from services, env block, and overrides — not from .env files).
+// These are branch-specific and should be injected per-pane via -e flags.
+func ManagedKeys(cfg *config.Config, overrides map[string]string) map[string]bool {
+	keys := make(map[string]bool)
+	for _, svc := range cfg.Services {
+		keys[svc.Env] = true
+	}
+	for k := range cfg.Env {
+		keys[k] = true
+	}
+	for k := range overrides {
+		keys[k] = true
+	}
+	return keys
+}
+
+// SplitEnv separates a resolved env map into shared (.env file vars) and
+// managed (branch-specific vars). Use managedKeys from ManagedKeys().
+func SplitEnv(resolved map[string]string, managedKeys map[string]bool) (shared, managed map[string]string) {
+	shared = make(map[string]string)
+	managed = make(map[string]string)
+	for k, v := range resolved {
+		if managedKeys[k] {
+			managed[k] = v
+		} else {
+			shared[k] = v
+		}
+	}
+	return shared, managed
+}
+
 // ParseOverrides parses a slice of "KEY=VALUE" strings into a map.
 // This is used to parse -e flag values from the CLI.
 func ParseOverrides(pairs []string) (map[string]string, error) {
