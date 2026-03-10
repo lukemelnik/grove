@@ -198,8 +198,7 @@ func (m *Manager) resolveBranch(branch, fromRef string) (BranchResolution, error
 		baseRef = m.defaultBaseRef()
 	}
 
-	// Make sure the base ref is up to date
-	_, _ = m.git.Run("fetch", "origin")
+	// Note: we already fetched origin above, no need to fetch again.
 
 	// Create new branch from base ref
 	_, err := m.git.Run("branch", branch, baseRef)

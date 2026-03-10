@@ -10,6 +10,7 @@ package env
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -127,8 +128,8 @@ func Resolve(cfg *config.Config, ports map[string]int, projectRoot string, overr
 	// Step 1: Read all .env files (order matters, later files override earlier ones)
 	for _, envFile := range cfg.EnvFiles {
 		path := envFile
-		if projectRoot != "" && !strings.HasPrefix(path, "/") {
-			path = projectRoot + "/" + path
+		if projectRoot != "" && !filepath.IsAbs(path) {
+			path = filepath.Join(projectRoot, path)
 		}
 		vars, err := ParseEnvFile(path)
 		if err != nil {
