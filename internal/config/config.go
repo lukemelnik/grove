@@ -63,6 +63,9 @@ type TmuxConfig struct {
 //   - Map with cmd: {cmd: "pnpm dev", optional: true}
 //   - Map with split: {split: "vertical", panes: [...]} (Tier 3 explicit splits)
 type Pane struct {
+	// Name is an optional identifier for this pane, used with --with <name>.
+	Name string `yaml:"name,omitempty"`
+
 	// Cmd is the command to run in this pane.
 	Cmd string `yaml:"cmd,omitempty"`
 
@@ -150,8 +153,26 @@ func validate(cfg *Config) error {
 		if cfg.Tmux.Mode != "" && cfg.Tmux.Mode != "window" && cfg.Tmux.Mode != "session" {
 			return fmt.Errorf("tmux mode must be \"window\" or \"session\", got %q", cfg.Tmux.Mode)
 		}
+		if err := validatePanes(cfg.Tmux.Panes); err != nil {
+			return err
+		}
 	}
 
+	return nil
+}
+
+// validatePanes recursively validates pane definitions.
+func validatePanes(panes []Pane) error {
+	for _, p := range panes {
+		if p.Split != "" {
+			if p.Split != "vertical" && p.Split != "horizontal" {
+				return fmt.Errorf("split direction must be \"vertical\" or \"horizontal\", got %q", p.Split)
+			}
+			if err := validatePanes(p.Panes); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
