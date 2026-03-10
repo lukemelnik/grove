@@ -18,13 +18,15 @@
 **Status: COMPLETE**
 
 ### Sprint 2: Port Hashing, Port Availability, Env Resolution
-- [ ] Implement deterministic port hashing (MD5 branch name -> offset)
-- [ ] Implement port availability checking with collision avoidance
-- [ ] Implement blocked port list (browser-restricted ports)
-- [ ] Implement env file reading (.env parsing)
-- [ ] Implement env resolution order (env_files -> env block -> services ports -> -e flags)
-- [ ] Implement template syntax resolution ({{service.port}})
-- [ ] Write tests for port hashing, env resolution, template expansion
+- [x] Implement deterministic port hashing (MD5 branch name -> offset)
+- [x] Implement port availability checking with collision avoidance
+- [x] Implement blocked port list (browser-restricted ports)
+- [x] Implement env file reading (.env parsing)
+- [x] Implement env resolution order (env_files -> env block -> services ports -> -e flags)
+- [x] Implement template syntax resolution ({{service.port}})
+- [x] Write tests for port hashing, env resolution, template expansion
+
+**Status: COMPLETE**
 
 ### Sprint 3: Worktree Management
 - [ ] Implement worktree creation (git worktree add)
