@@ -6,7 +6,6 @@ import (
 	"sort"
 
 	"grove/internal/config"
-	"grove/internal/env"
 	"grove/internal/ports"
 	"grove/internal/worktree"
 
@@ -15,17 +14,16 @@ import (
 
 // statusOutput is the structured JSON output for grove status --json.
 type statusOutput struct {
-	Branch   string            `json:"branch"`
-	Worktree string            `json:"worktree"`
-	Ports    map[string]int    `json:"ports"`
-	Env      map[string]string `json:"env"`
+	Branch   string         `json:"branch"`
+	Worktree string         `json:"worktree"`
+	Ports    map[string]int `json:"ports"`
 }
 
 func newStatusCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show info for the current worktree",
-		Long:  `Show branch, worktree path, port assignments, and environment variables for the current worktree (detected from cwd).`,
+		Long:  `Show branch, worktree path, and port assignments for the current worktree (detected from cwd).`,
 		Args:  cobra.NoArgs,
 		RunE:  runStatus,
 	}
@@ -76,19 +74,12 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		assignedPorts = map[string]int{}
 	}
 
-	// Step 4: Resolve environment variables
-	resolvedEnv, err := env.Resolve(cfg, assignedPorts, projectRoot)
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
-	}
-
-	// Step 5: Output
+	// Step 4: Output
 	if jsonOutput {
 		out := statusOutput{
 			Branch:   wtInfo.Branch,
 			Worktree: wtInfo.Path,
 			Ports:    assignedPorts,
-			Env:      resolvedEnv,
 		}
 		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
@@ -111,22 +102,6 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		sort.Strings(names)
 		for _, name := range names {
 			fmt.Fprintf(w, "  %s: %d\n", name, assignedPorts[name])
-		}
-	}
-
-	if len(resolvedEnv) > 0 {
-		fmt.Fprintln(w, "Env:")
-		keys := make([]string, 0, len(resolvedEnv))
-		for k := range resolvedEnv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			v := resolvedEnv[k]
-			if len(v) > 100 {
-				v = v[:97] + "..."
-			}
-			fmt.Fprintf(w, "  %s=%s\n", k, v)
 		}
 	}
 

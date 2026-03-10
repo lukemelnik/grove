@@ -17,13 +17,18 @@ func newDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "delete <branch>",
 		Short: "Delete a worktree and its associated tmux session/window",
-		Long: `Remove a worktree and its tmux session/window. Checks for open PRs
-via gh (if available) and warns before deleting branches with open PRs.`,
+		Long: `Remove a worktree and its tmux session/window.
+
+Safety checks (skipped with --force):
+  - Open PRs: checks via gh CLI (if available)
+  - Unpushed commits: blocks if the branch has local commits not on the remote
+  - Never-pushed branches: blocks if the branch has no remote tracking branch
+  - Uncommitted changes: git refuses to remove dirty worktrees`,
 		Args: cobra.ExactArgs(1),
 		RunE: runDelete,
 	}
 
-	cmd.Flags().Bool("force", false, "skip PR check and delete anyway")
+	cmd.Flags().Bool("force", false, "skip safety checks (open PRs, unpushed commits) and force-remove dirty worktrees")
 	cmd.Flags().Bool("keep-branch", false, "remove worktree but keep the git branch")
 
 	return cmd
@@ -79,7 +84,29 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 3: Remove tmux session/window (if tmux config exists)
+	// Step 3: Check for unpushed commits (unless --force)
+	git := worktree.NewGitRunner(projectRoot)
+	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+
+	if !force {
+		status, count, err := wtMgr.CheckUnpushed(branch)
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for unpushed commits: %v\n", err)
+		} else {
+			switch status {
+			case worktree.UnpushedNoRemote:
+				return fmt.Errorf("branch %q has never been pushed to a remote — use --force to delete anyway, or push first with: git push -u origin %s", branch, branch)
+			case worktree.UnpushedCommits:
+				noun := "commit"
+				if count > 1 {
+					noun = "commits"
+				}
+				return fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)
+			}
+		}
+	}
+
+	// Step 4: Remove tmux session/window (if tmux config exists)
 	if cfg.Tmux != nil {
 		tmuxRunner := tmuxRunnerFactory()
 		tmuxMgr := tmux.NewManager(tmuxRunner)
@@ -107,10 +134,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 4: Remove git worktree and optionally delete branch
-	git := worktree.NewGitRunner(projectRoot)
-	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
-
+	// Step 5: Remove git worktree and optionally delete branch
 	deleteBranch := !keepBranch
 	result, err := wtMgr.Remove(branch, deleteBranch, force)
 	if err != nil {

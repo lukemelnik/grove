@@ -472,6 +472,42 @@ func (m *Manager) BranchHasUniqueCommits(branch, baseBranch string) (bool, error
 	return strings.TrimSpace(out) != "0", nil
 }
 
+// UnpushedStatus describes whether a branch has commits not on the remote.
+type UnpushedStatus int
+
+const (
+	// UnpushedNone means all commits are pushed to the remote.
+	UnpushedNone UnpushedStatus = iota
+	// UnpushedCommits means the branch has commits not on the remote.
+	UnpushedCommits
+	// UnpushedNoRemote means the branch has no remote tracking branch.
+	UnpushedNoRemote
+)
+
+// CheckUnpushed checks if a branch has unpushed commits.
+// Returns the status and the number of unpushed commits (0 for NoRemote).
+func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
+	// Check if there's a remote tracking branch
+	_, err := m.git.Run("rev-parse", "--verify", "refs/remotes/origin/"+branch)
+	if err != nil {
+		// No remote tracking branch — the branch was never pushed
+		return UnpushedNoRemote, 0, nil
+	}
+
+	// Count commits ahead of remote
+	out, err := m.git.Run("rev-list", "--count", "origin/"+branch+".."+branch)
+	if err != nil {
+		return 0, 0, fmt.Errorf("counting unpushed commits: %w", err)
+	}
+
+	count := 0
+	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
+	if count > 0 {
+		return UnpushedCommits, count, nil
+	}
+	return UnpushedNone, 0, nil
+}
+
 // GoneBranches returns branch names whose remote tracking branch has been deleted.
 // These are branches that show [gone] in `git branch -vv` output.
 func (m *Manager) GoneBranches() ([]string, error) {

@@ -788,6 +788,49 @@ services:
 	}
 }
 
+func TestParse_EnvFilesAbsolutePath(t *testing.T) {
+	yaml := []byte(`
+env_files:
+  - /etc/secrets/.env
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for absolute env_files path")
+	}
+	if !strings.Contains(err.Error(), "must be a relative path") {
+		t.Errorf("expected 'must be a relative path' error, got: %v", err)
+	}
+}
+
+func TestParse_EnvFilesEscapesRoot(t *testing.T) {
+	yaml := []byte(`
+env_files:
+  - ../../etc/passwd
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for env_files escaping project root")
+	}
+	if !strings.Contains(err.Error(), "escapes the project root") {
+		t.Errorf("expected 'escapes the project root' error, got: %v", err)
+	}
+}
+
+func TestParse_EnvFilesValidRelative(t *testing.T) {
+	yaml := []byte(`
+env_files:
+  - .env
+  - apps/api/.env
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.EnvFiles) != 2 {
+		t.Errorf("expected 2 env_files, got %d", len(cfg.EnvFiles))
+	}
+}
+
 func TestDiscover_SymlinkDir(t *testing.T) {
 	// Config in a parent dir reached via a symlinked child
 	realDir := t.TempDir()

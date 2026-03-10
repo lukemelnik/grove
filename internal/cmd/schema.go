@@ -15,7 +15,8 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 # Default: "../.grove-worktrees"
 worktree_dir: ../.grove-worktrees
 
-# Env files to load. Paths are relative to the project root.
+# Env files to load. Paths must be relative to the project root and
+# cannot escape it (no absolute paths or "../" prefixes).
 # In worktrees, these files are symlinked from the main repo.
 # Grove writes .env.local files next to each symlink with
 # branch-specific port assignments and template-resolved vars.
@@ -64,6 +65,10 @@ tmux:
   main_size: "70%"
 
   # panes: commands to run in each pane.
+  #
+  # NOTE: cmd and setup values are executed as shell commands in tmux panes.
+  # Review these before running grove create in an unfamiliar repo, just as
+  # you would review a Makefile, package.json scripts, or docker-compose.yml.
   #
   # Simple form — just a command string:
   #   - nvim

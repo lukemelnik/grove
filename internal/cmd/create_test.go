@@ -110,8 +110,8 @@ env:
 	if !strings.Contains(output, "web:") {
 		t.Errorf("output should contain web port, got:\n%s", output)
 	}
-	if !strings.Contains(output, "VITE_API_URL=") {
-		t.Errorf("output should contain VITE_API_URL, got:\n%s", output)
+	if strings.Contains(output, "Env:") {
+		t.Errorf("output should NOT contain Env section, got:\n%s", output)
 	}
 
 	// Verify worktree directory was created
@@ -180,16 +180,13 @@ env:
 	if _, ok := result.Ports["web"]; !ok {
 		t.Error("expected web port in output")
 	}
-	if _, ok := result.Env["PORT"]; !ok {
-		t.Error("expected PORT in env output")
-	}
-	if _, ok := result.Env["WEB_PORT"]; !ok {
-		t.Error("expected WEB_PORT in env output")
-	}
-	if v, ok := result.Env["VITE_API_URL"]; !ok {
-		t.Error("expected VITE_API_URL in env output")
-	} else if !strings.HasPrefix(v, "http://localhost:") {
-		t.Errorf("VITE_API_URL should start with http://localhost:, got %s", v)
+	// Env should not be present in output
+	rawJSON := buf.Bytes()
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(rawJSON, &rawMap); err == nil {
+		if _, hasEnv := rawMap["env"]; hasEnv {
+			t.Error("JSON output should NOT contain env field")
+		}
 	}
 }
 

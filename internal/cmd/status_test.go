@@ -84,8 +84,8 @@ env:
 	if !strings.Contains(output, "api:") {
 		t.Errorf("expected api port in output, got:\n%s", output)
 	}
-	if !strings.Contains(output, "VITE_API_URL=") {
-		t.Errorf("expected VITE_API_URL in output, got:\n%s", output)
+	if strings.Contains(output, "Env:") {
+		t.Errorf("output should NOT contain Env section, got:\n%s", output)
 	}
 }
 
@@ -147,13 +147,13 @@ env:
 	if _, ok := result.Ports["api"]; !ok {
 		t.Error("expected api port in output")
 	}
-	if _, ok := result.Env["PORT"]; !ok {
-		t.Error("expected PORT in env output")
-	}
-	if v, ok := result.Env["VITE_API_URL"]; !ok {
-		t.Error("expected VITE_API_URL in env output")
-	} else if !strings.HasPrefix(v, "http://localhost:") {
-		t.Errorf("VITE_API_URL should start with http://localhost:, got %s", v)
+	// Env should not be present in output
+	rawJSON := buf.Bytes()
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal(rawJSON, &rawMap); err == nil {
+		if _, hasEnv := rawMap["env"]; hasEnv {
+			t.Error("JSON output should NOT contain env field")
+		}
 	}
 }
 

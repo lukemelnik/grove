@@ -794,3 +794,56 @@ func TestIntegration_FindByPath(t *testing.T) {
 		t.Error("expected error for nonexistent path")
 	}
 }
+
+func TestCheckUnpushed_NoRemote(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "", fmt.Errorf("not found"))
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedNoRemote {
+		t.Errorf("expected UnpushedNoRemote, got %d", status)
+	}
+	if count != 0 {
+		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+func TestCheckUnpushed_HasUnpushed(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "abc123", nil)
+	mock.On("rev-list --count origin/feat/test..feat/test", "3", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedCommits {
+		t.Errorf("expected UnpushedCommits, got %d", status)
+	}
+	if count != 3 {
+		t.Errorf("expected count 3, got %d", count)
+	}
+}
+
+func TestCheckUnpushed_AllPushed(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "abc123", nil)
+	mock.On("rev-list --count origin/feat/test..feat/test", "0", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedNone {
+		t.Errorf("expected UnpushedNone, got %d", status)
+	}
+	if count != 0 {
+		t.Errorf("expected count 0, got %d", count)
+	}
+}

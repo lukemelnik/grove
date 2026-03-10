@@ -181,12 +181,16 @@ grove attach feat/auth
 Removes the worktree, kills the tmux session/window, and deletes the local branch.
 
 ```bash
-grove delete feat/auth              # Checks for open PRs first
-grove delete feat/auth --force      # Skip safety checks, force delete dirty worktrees
+grove delete feat/auth              # Safety checks first, then delete
+grove delete feat/auth --force      # Skip all safety checks
 grove delete feat/auth --keep-branch  # Remove worktree but keep the git branch
 ```
 
-Checks for open PRs via the `gh` CLI before deleting (unless `--force`). If the worktree has uncommitted changes, `--force` is required.
+**Safety checks** (all skipped with `--force`):
+- **Open PRs** — checks via `gh` CLI (if available)
+- **Unpushed commits** — blocks if the branch has local commits not on the remote
+- **Never-pushed branches** — blocks if the branch has no remote tracking branch
+- **Uncommitted changes** — git refuses to remove dirty worktrees
 
 ### `grove list`
 
@@ -244,11 +248,6 @@ Worktree: /path/to/.grove-worktrees/feat-auth
 Ports:
   api: 4045
   web: 3045
-Env:
-  CORS_ORIGIN=http://localhost:3045
-  PORT=4045
-  VITE_API_URL=http://localhost:4045
-  WEB_PORT=3045
 ```
 
 ## How It Works
@@ -520,6 +519,14 @@ tmux:
       optional: true
       name: git
 ```
+
+## Trust Model
+
+Grove uses an **explicit-invocation** model — nothing happens until you run `grove create` or `grove attach`. This is the same model as `make`, `npm run`, `docker compose up`, and similar tools: you review the config, then run the command.
+
+**Pane commands are code.** The `cmd` and `setup` fields in `tmux.panes` are executed as shell commands. Review `.grove.yml` before running `grove create` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
+
+**Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time.
 
 ## Requirements
 

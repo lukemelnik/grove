@@ -17,10 +17,9 @@ import (
 
 // createOutput is the structured JSON output for grove create --json.
 type createOutput struct {
-	Worktree string            `json:"worktree"`
-	Branch   string            `json:"branch"`
-	Ports    map[string]int    `json:"ports"`
-	Env      map[string]string `json:"env"`
+	Worktree string         `json:"worktree"`
+	Branch   string         `json:"branch"`
+	Ports    map[string]int `json:"ports"`
 }
 
 func newCreateCmd() *cobra.Command {
@@ -116,29 +115,23 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		portAssignment = &ports.Assignment{Ports: map[string]int{}}
 	}
 
-	// Step 3: Resolve environment variables
-	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot)
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
-	}
-
-	// Step 4: Create worktree with branch resolution
+	// Step 3: Create worktree with branch resolution
 	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
 	}
 
-	// Step 5: Output worktree details before attach so interactive users still
+	// Step 4: Output worktree details before attach so interactive users still
 	// see the workspace info before tmux takes over.
 	if jsonOutput {
-		if err := outputJSON(cmd, result, portAssignment.Ports, resolvedEnv); err != nil {
+		if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
 			return outputError(cmd, err)
 		}
-	} else if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg); err != nil {
+	} else if err := outputText(cmd, result, portAssignment.Ports); err != nil {
 		return outputError(cmd, err)
 	}
 
-	// Step 6: Symlink .env files and write .env.local with managed vars
+	// Step 5: Symlink .env files and write .env.local with managed vars
 	if len(cfg.EnvFiles) > 0 {
 		if err := env.SymlinkEnvFiles(cfg.EnvFiles, projectRoot, result.Path); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
@@ -152,7 +145,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 7: Tmux workspace setup (default to empty config if not specified)
+	// Step 6: Tmux workspace setup (default to empty config if not specified)
 	if !noTmux {
 		tmuxCfg := cfg.Tmux
 		if tmuxCfg == nil {
@@ -183,12 +176,11 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string) error {
+func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int) error {
 	out := createOutput{
 		Worktree: result.Path,
 		Branch:   result.Branch,
 		Ports:    assignedPorts,
-		Env:      resolvedEnv,
 	}
 	data, err := json.MarshalIndent(out, "", "  ")
 	if err != nil {
@@ -198,7 +190,7 @@ func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 	return nil
 }
 
-func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string, cfg *config.Config) error {
+func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int) error {
 	w := cmd.OutOrStdout()
 
 	if result.Created {
@@ -218,35 +210,6 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 		sort.Strings(names)
 		for _, name := range names {
 			fmt.Fprintf(w, "  %s: %d\n", name, assignedPorts[name])
-		}
-	}
-
-	// Only show grove-managed env vars in text output (port vars + env block).
-	managedEnv := make(map[string]string)
-	for _, svc := range cfg.Services {
-		if v, ok := resolvedEnv[svc.Env]; ok {
-			managedEnv[svc.Env] = v
-		}
-	}
-	for k := range cfg.Env {
-		if v, ok := resolvedEnv[k]; ok {
-			managedEnv[k] = v
-		}
-	}
-
-	if len(managedEnv) > 0 {
-		fmt.Fprintln(w, "Env:")
-		keys := make([]string, 0, len(managedEnv))
-		for k := range managedEnv {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			v := managedEnv[k]
-			if len(v) > 100 {
-				v = v[:97] + "..."
-			}
-			fmt.Fprintf(w, "  %s=%s\n", k, v)
 		}
 	}
 

@@ -200,6 +200,17 @@ func Validate(cfg *Config) error {
 		envSeen[svc.Env] = name
 	}
 
+	// Validate env_files paths stay within project root
+	for _, envFile := range cfg.EnvFiles {
+		if filepath.IsAbs(envFile) {
+			return fmt.Errorf("env_files: %q must be a relative path", envFile)
+		}
+		cleaned := filepath.Clean(envFile)
+		if strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("env_files: %q escapes the project root", envFile)
+		}
+	}
+
 	// Validate tmux config
 	if cfg.Tmux != nil {
 		if cfg.Tmux.Mode != "" && cfg.Tmux.Mode != "window" && cfg.Tmux.Mode != "session" {

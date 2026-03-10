@@ -113,7 +113,7 @@ services:
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"delete", "feat/keep-branch", "--keep-branch"})
+	rootCmd.SetArgs([]string{"delete", "feat/keep-branch", "--keep-branch", "--force"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -297,16 +297,15 @@ services:
 	var stderr bytes.Buffer
 	rootCmd.SetOut(&stdout)
 	rootCmd.SetErr(&stderr)
-	rootCmd.SetArgs([]string{"delete", "feat/no-gh"})
+	rootCmd.SetArgs([]string{"delete", "feat/no-gh", "--force"})
 
 	err := rootCmd.Execute()
 	if err != nil {
-		t.Fatalf("delete should succeed when gh is not available: %v", err)
+		t.Fatalf("delete should succeed when gh is not available: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 
-	// Should print a note about skipping PR check
-	if !strings.Contains(stderr.String(), "skipping PR check") {
-		t.Errorf("expected 'skipping PR check' note, stderr:\n%s", stderr.String())
+	if !strings.Contains(stdout.String(), "Deleted worktree") {
+		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", stdout.String())
 	}
 }
 
@@ -320,6 +319,115 @@ func TestDeleteCmd_MissingBranchArg(t *testing.T) {
 	err := rootCmd.Execute()
 	if err == nil {
 		t.Error("expected error for missing branch argument")
+	}
+}
+
+func TestDeleteCmd_UnpushedBranch_Blocks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port: 4000
+    env: PORT
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	run("branch", "feat/unpushed")
+	run("worktree", "add", filepath.Join(worktreeDir, "feat-unpushed"), "feat/unpushed")
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	defer func() { ghAvailable = origGhAvailable }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/unpushed"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for branch never pushed to remote")
+	}
+	if !strings.Contains(err.Error(), "never been pushed") {
+		t.Errorf("expected 'never been pushed' in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "--force") {
+		t.Errorf("expected '--force' hint in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "git push") {
+		t.Errorf("expected 'git push' hint in error, got: %v", err)
+	}
+}
+
+func TestDeleteCmd_UnpushedBranch_ForceOverrides(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port: 4000
+    env: PORT
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	run("branch", "feat/unpushed-force")
+	run("worktree", "add", filepath.Join(worktreeDir, "feat-unpushed-force"), "feat/unpushed-force")
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	defer func() { ghAvailable = origGhAvailable }()
+
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return &noopTmuxRunner{} }
+	defer func() { tmuxRunnerFactory = origFactory }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/unpushed-force", "--force"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("delete --force should succeed for unpushed branch: %v\nOutput: %s", err, buf.String())
+	}
+
+	if !strings.Contains(buf.String(), "Deleted worktree") {
+		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", buf.String())
 	}
 }
 
