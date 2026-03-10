@@ -21,6 +21,8 @@ func TestSanitizeBranchName(t *testing.T) {
 		{"fix/login-bug", "fix-login-bug"},
 		{"feat/deep/nested/branch", "feat-deep-nested-branch"},
 		{"no-slashes", "no-slashes"},
+		{"..", "dotdot"},
+		{".", "dot"},
 		{"", ""},
 	}
 	for _, tt := range tests {

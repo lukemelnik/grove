@@ -42,9 +42,19 @@ func (g *realGitRunner) Run(args ...string) (string, error) {
 }
 
 // SanitizeBranchName converts a branch name into a safe directory name
-// by replacing slashes with dashes.
+// by replacing slashes with dashes and stripping path traversal components.
 func SanitizeBranchName(branch string) string {
-	return strings.ReplaceAll(branch, "/", "-")
+	sanitized := strings.ReplaceAll(branch, "/", "-")
+	// Remove any ".." path components that could cause path traversal.
+	// After slash replacement, ".." can only appear as the whole string or
+	// embedded in the name. We replace standalone ".." with "dotdot".
+	if sanitized == ".." {
+		sanitized = "dotdot"
+	}
+	if sanitized == "." {
+		sanitized = "dot"
+	}
+	return sanitized
 }
 
 // WorktreePath computes the absolute path for a worktree given the project root,
