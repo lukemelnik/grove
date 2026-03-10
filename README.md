@@ -214,7 +214,15 @@ Ports:
 
 ### `grove clean`
 
-Batch cleanup of stale worktrees — branches whose remote was deleted (after merging a PR) or that are fully merged into the default branch.
+Batch cleanup of stale worktrees. Each branch is labeled with a reason:
+
+| Reason | Meaning | Detection |
+|--------|---------|-----------|
+| **gone** | Remote tracking branch was deleted (e.g. after merging a PR) | `git branch -vv` — works with any merge strategy |
+| **merged** | Branch is fully merged into the default branch | `git branch --merged` — regular merges only, not squash/rebase |
+| **unchanged** | Branch has no unique commits beyond the default branch | `git rev-list --count` — created but never worked on |
+
+**Tip:** If you use squash or rebase merges, enable **"Automatically delete head branches"** in your GitHub repo settings (Settings → General). This ensures remote branches are deleted after merging, so `grove clean` reliably detects them as "gone".
 
 ```bash
 grove clean              # Interactive — shows what would be cleaned, asks for confirmation

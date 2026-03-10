@@ -33,8 +33,15 @@ func newCleanCmd() *cobra.Command {
 		Long: `Find and remove worktrees whose branches are stale:
 
   - Gone branches: local branches whose remote tracking branch was deleted
-    (typically after merging a PR).
-  - Merged branches: branches fully merged into the main/master branch.
+    (typically after merging a PR). This is the most reliable detection
+    method and works regardless of merge strategy (merge, squash, or rebase).
+    Enable "Automatically delete head branches" in your GitHub repo settings
+    to ensure remote branches are cleaned up after merging.
+  - Merged branches: branches fully merged into the main/master branch
+    (detected via git branch --merged). Note: this only catches regular
+    merges and fast-forwards, not squash or rebase merges.
+  - Unchanged branches: branches with no unique commits beyond the default
+    branch — created but never worked on.
 
 For each stale worktree, the associated tmux session/window is killed,
 the git worktree is removed, and the local branch is deleted.`,
