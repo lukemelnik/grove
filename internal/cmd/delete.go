@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -111,16 +112,19 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
 
 	deleteBranch := !keepBranch
-	if err := wtMgr.Remove(branch, deleteBranch); err != nil {
+	result, err := wtMgr.Remove(branch, deleteBranch, force)
+	if err != nil {
 		return fmt.Errorf("removing worktree: %w", err)
 	}
 
 	w := cmd.OutOrStdout()
 	fmt.Fprintf(w, "Deleted worktree for branch %q\n", branch)
-	if deleteBranch {
-		fmt.Fprintf(w, "Deleted branch %q\n", branch)
-	} else {
+	if !deleteBranch {
 		fmt.Fprintf(w, "Kept branch %q\n", branch)
+	} else if result.BranchDeleted {
+		fmt.Fprintf(w, "Deleted branch %q\n", branch)
+	} else if result.BranchSkipReason != "" {
+		fmt.Fprintf(w, "Kept branch %q (%s)\n", branch, result.BranchSkipReason)
 	}
 
 	return nil
@@ -134,23 +138,16 @@ func checkOpenPRs(branch string) (bool, string, error) {
 		return false, "", fmt.Errorf("running gh pr list: %w", err)
 	}
 
-	out = strings.TrimSpace(out)
-	// Empty array means no open PRs
-	if out == "[]" || out == "" {
+	var prs []struct {
+		Number int `json:"number"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &prs); err != nil {
+		return false, "", fmt.Errorf("parsing pr list output: %w", err)
+	}
+
+	if len(prs) == 0 {
 		return false, "", nil
 	}
 
-	// Extract the PR number from the JSON (simple parsing — it's just [{"number":123}])
-	// We don't import encoding/json here to keep it simple; the format is predictable.
-	if idx := strings.Index(out, "\"number\":"); idx >= 0 {
-		numStart := idx + len("\"number\":")
-		numEnd := numStart
-		for numEnd < len(out) && out[numEnd] != ',' && out[numEnd] != '}' {
-			numEnd++
-		}
-		return true, strings.TrimSpace(out[numStart:numEnd]), nil
-	}
-
-	// Fallback: if we got non-empty output but couldn't parse, there's probably a PR
-	return true, "?", nil
+	return true, fmt.Sprintf("%d", prs[0].Number), nil
 }
