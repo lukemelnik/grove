@@ -2,10 +2,25 @@ package config
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v failed: %s: %v", args, out, err)
+		}
+	}
+}
 
 func TestParse_MinimalConfig(t *testing.T) {
 	yaml := []byte(`
@@ -333,6 +348,7 @@ services:
 
 func TestDiscover_FindsConfigInCurrentDir(t *testing.T) {
 	dir := t.TempDir()
+	initGitRepo(t, dir)
 	configPath := filepath.Join(dir, ConfigFileName)
 	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)
@@ -353,6 +369,7 @@ func TestDiscover_FindsConfigInCurrentDir(t *testing.T) {
 
 func TestDiscover_FindsConfigInParentDir(t *testing.T) {
 	parentDir := t.TempDir()
+	initGitRepo(t, parentDir)
 	childDir := filepath.Join(parentDir, "subdir", "deep")
 	if err := os.MkdirAll(childDir, 0755); err != nil {
 		t.Fatal(err)
@@ -376,12 +393,29 @@ func TestDiscover_FindsConfigInParentDir(t *testing.T) {
 	}
 }
 
-func TestDiscover_NotFound(t *testing.T) {
-	// Use a temp dir that definitely has no .grove.yml anywhere up
+func TestDiscover_NotFound_NoGitRepo(t *testing.T) {
 	dir := t.TempDir()
 	_, _, err := Discover(dir)
 	if err == nil {
+		t.Fatal("expected error when not in a git repo")
+	}
+	if !strings.Contains(err.Error(), "not a git repository") {
+		t.Errorf("expected 'not a git repository' error, got: %v", err)
+	}
+}
+
+func TestDiscover_NotFound_GitRepoNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	initGitRepo(t, dir)
+	_, _, err := Discover(dir)
+	if err == nil {
 		t.Fatal("expected error when no config found")
+	}
+	if !strings.Contains(err.Error(), "no .grove.yml found") {
+		t.Errorf("expected 'no .grove.yml found' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "grove init") {
+		t.Errorf("expected hint about 'grove init', got: %v", err)
 	}
 }
 
@@ -757,6 +791,7 @@ services:
 func TestDiscover_SymlinkDir(t *testing.T) {
 	// Config in a parent dir reached via a symlinked child
 	realDir := t.TempDir()
+	initGitRepo(t, realDir)
 	configPath := filepath.Join(realDir, ConfigFileName)
 	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
 		t.Fatal(err)

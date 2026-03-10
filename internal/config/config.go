@@ -240,7 +240,18 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 		return "", "", fmt.Errorf("resolving absolute path: %w", err)
 	}
 
-	// First: walk up the directory tree
+	// Check that git is available
+	if _, err := exec.LookPath("git"); err != nil {
+		return "", "", fmt.Errorf("git is not installed or not in PATH — grove requires git")
+	}
+
+	// Find the git repo root to bound our search
+	repoRoot, err := gitRepoRoot(dir)
+	if err != nil {
+		return "", "", fmt.Errorf("not a git repository (searched from %s) — run 'grove init' inside a git repo", dir)
+	}
+
+	// Walk up the directory tree, stopping at the git repo root
 	cur := dir
 	for {
 		candidate := filepath.Join(cur, ConfigFileName)
@@ -248,6 +259,9 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 			return candidate, cur, nil
 		}
 
+		if cur == repoRoot {
+			break
+		}
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			break
@@ -265,7 +279,18 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 		}
 	}
 
-	return "", "", fmt.Errorf("no %s found (searched from %s to filesystem root)", ConfigFileName, startDir)
+	return "", "", fmt.Errorf("no %s found in %s — run 'grove init' to create one", ConfigFileName, repoRoot)
+}
+
+// gitRepoRoot returns the top-level directory of the current git repository.
+func gitRepoRoot(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // gitMainRepoRoot returns the root directory of the main git repo
