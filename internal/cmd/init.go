@@ -326,6 +326,10 @@ func runInitInteractive(cmd *cobra.Command, force bool) error {
 }
 
 func writeConfig(cmd *cobra.Command, configPath string, cfg *config.Config) error {
+	if err := config.Validate(cfg); err != nil {
+		return fmt.Errorf("validating config: %w", err)
+	}
+
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)

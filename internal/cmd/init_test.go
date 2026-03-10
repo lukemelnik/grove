@@ -44,30 +44,30 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	//     - Optional: yes
 	//   - Add pane? no
 	input := strings.Join([]string{
-		"",          // worktree dir (accept default)
-		".env",      // env files
-		"y",         // add a service?
-		"api",       // service name
-		"4000",      // port
-		"PORT",      // env var
-		"y",         // add another service?
-		"web",       // service name
-		"3000",      // port
-		"WEB_PORT",  // env var
-		"n",         // add another service?
-		"y",         // include tmux?
-		"session",   // mode
+		"",              // worktree dir (accept default)
+		".env",          // env files
+		"y",             // add a service?
+		"api",           // service name
+		"4000",          // port
+		"PORT",          // env var
+		"y",             // add another service?
+		"web",           // service name
+		"3000",          // port
+		"WEB_PORT",      // env var
+		"n",             // add another service?
+		"y",             // include tmux?
+		"session",       // mode
 		"main-vertical", // layout
-		"70%",       // main size
-		"y",         // add pane?
-		"nvim",      // command
-		"",          // pane name (empty)
-		"n",         // optional?
-		"y",         // add pane?
-		"pnpm dev",  // command
-		"dev",       // pane name
-		"y",         // optional?
-		"n",         // add pane?
+		"70%",           // main size
+		"y",             // add pane?
+		"nvim",          // command
+		"",              // pane name (empty)
+		"n",             // optional?
+		"y",             // add pane?
+		"pnpm dev",      // command
+		"dev",           // pane name
+		"y",             // optional?
+		"n",             // add pane?
 	}, "\n")
 
 	origStdin := stdinReader
@@ -282,11 +282,11 @@ func TestInitCmd_OverwriteConfirm(t *testing.T) {
 
 	// User says yes to overwrite, then minimal config
 	input := strings.Join([]string{
-		"y",  // overwrite
-		"",   // worktree dir
-		"",   // env files
-		"n",  // add service?
-		"n",  // include tmux?
+		"y", // overwrite
+		"",  // worktree dir
+		"",  // env files
+		"n", // add service?
+		"n", // include tmux?
 	}, "\n")
 
 	origStdin := stdinReader
@@ -320,13 +320,13 @@ func TestInitCmd_InvalidPort(t *testing.T) {
 
 	// Try to add a service with invalid port, then skip adding more
 	input := strings.Join([]string{
-		"",       // worktree dir
-		"",       // env files
-		"y",      // add a service?
-		"api",    // service name
+		"",         // worktree dir
+		"",         // env files
+		"y",        // add a service?
+		"api",      // service name
 		"notaport", // invalid port
-		"n",      // add another service? (after skip)
-		"n",      // include tmux?
+		"n",        // add another service? (after skip)
+		"n",        // include tmux?
 	}, "\n")
 
 	origStdin := stdinReader
@@ -413,6 +413,33 @@ func TestInitCmd_DefaultEnvVarName(t *testing.T) {
 	// Second service should get WEB_PORT as default
 	if !strings.Contains(content, "env: WEB_PORT") {
 		t.Errorf("expected second service to have env: WEB_PORT, got:\n%s", content)
+	}
+}
+
+func TestInitCmd_NonInteractiveValidationFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return tmpDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"init", "--tmux-mode", "invalid"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected init command to fail for invalid tmux mode")
+	}
+	if !strings.Contains(err.Error(), `tmux mode must be "window" or "session"`) {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	configPath := filepath.Join(tmpDir, ".grove.yml")
+	if _, statErr := os.Stat(configPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no config file to be written, stat err = %v", statErr)
 	}
 }
 

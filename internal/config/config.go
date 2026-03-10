@@ -131,15 +131,15 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
-	if err := validate(&cfg); err != nil {
+	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
 }
 
-// validate checks that the config is well-formed.
-func validate(cfg *Config) error {
+// Validate checks that the config is well-formed.
+func Validate(cfg *Config) error {
 	// Validate services
 	envSeen := make(map[string]string) // env var name -> service name
 	for name, svc := range cfg.Services {
