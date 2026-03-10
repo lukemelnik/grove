@@ -43,6 +43,7 @@ Fish:
 		Args:                  cobra.MatchAll(cobra.ExactArgs(1), cobra.OnlyValidArgs),
 		DisableFlagsInUseLine: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// OnlyValidArgs ensures args[0] is one of "bash", "zsh", "fish"
 			switch args[0] {
 			case "bash":
 				return cmd.Root().GenBashCompletion(cmd.OutOrStdout())
