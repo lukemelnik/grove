@@ -20,16 +20,144 @@ import (
 var stdinReader io.Reader = os.Stdin
 
 func newInitCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Initialize a new .grove.yml configuration",
-		Long:  `Interactively create a .grove.yml in the current directory by asking about services, ports, and tmux preferences.`,
-		Args:  cobra.NoArgs,
-		RunE:  runInit,
+		Long: `Create a .grove.yml in the current directory.
+
+By default, runs interactively. Use flags for non-interactive setup
+(useful for agents and scripts).
+
+Non-interactive examples:
+  grove init --service api:4000:PORT --service web:3000:WEB_PORT
+  grove init --service api:4000:PORT --env-file .env --pane nvim --pane "pnpm dev"
+  grove init --service api:4000:PORT --pane nvim --pane "pnpm dev:dev:optional"
+
+Service format:  name:port:ENV_VAR
+Pane format:     command[:name[:optional]]
+
+Run 'grove schema' to see the full .grove.yml configuration reference.`,
+		Args: cobra.NoArgs,
+		RunE: runInit,
 	}
+
+	cmd.Flags().StringArray("service", nil, `add a service (format: name:port:ENV_VAR, repeatable)`)
+	cmd.Flags().StringArray("env-file", nil, "add an env file path (repeatable)")
+	cmd.Flags().StringArray("pane", nil, `add a tmux pane (format: command[:name[:optional]], repeatable)`)
+	cmd.Flags().String("worktree-dir", "", "worktree directory (default: ../.grove-worktrees)")
+	cmd.Flags().String("tmux-mode", "", `tmux mode: "window" or "session"`)
+	cmd.Flags().String("tmux-layout", "", "tmux layout preset or raw string")
+	cmd.Flags().StringArray("env", nil, "add an env var (format: KEY=VALUE or KEY={{service.port}}, repeatable)")
+	cmd.Flags().Bool("force", false, "overwrite existing .grove.yml without prompting")
+
+	return cmd
 }
 
 func runInit(cmd *cobra.Command, args []string) error {
+	// Detect non-interactive mode: any config flag was provided
+	services, _ := cmd.Flags().GetStringArray("service")
+	envFiles, _ := cmd.Flags().GetStringArray("env-file")
+	panes, _ := cmd.Flags().GetStringArray("pane")
+	wtDir, _ := cmd.Flags().GetString("worktree-dir")
+	tmuxMode, _ := cmd.Flags().GetString("tmux-mode")
+	tmuxLayout, _ := cmd.Flags().GetString("tmux-layout")
+	envVars, _ := cmd.Flags().GetStringArray("env")
+	force, _ := cmd.Flags().GetBool("force")
+
+	nonInteractive := len(services) > 0 || len(envFiles) > 0 || len(panes) > 0 ||
+		wtDir != "" || tmuxMode != "" || tmuxLayout != "" || len(envVars) > 0
+
+	if nonInteractive {
+		return runInitNonInteractive(cmd, services, envFiles, panes, wtDir, tmuxMode, tmuxLayout, envVars, force)
+	}
+
+	return runInitInteractive(cmd, force)
+}
+
+func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []string, wtDir, tmuxMode, tmuxLayout string, envVars []string, force bool) error {
+	cwd, err := getWorkingDir()
+	if err != nil {
+		return fmt.Errorf("getting working directory: %w", err)
+	}
+
+	configPath := filepath.Join(cwd, config.ConfigFileName)
+	if !force {
+		if _, err := os.Stat(configPath); err == nil {
+			return fmt.Errorf("%s already exists — use --force to overwrite", config.ConfigFileName)
+		}
+	}
+
+	cfg := config.Config{}
+
+	// Worktree dir
+	if wtDir != "" {
+		cfg.WorktreeDir = wtDir
+	} else {
+		cfg.WorktreeDir = "../.grove-worktrees"
+	}
+
+	// Env files
+	cfg.EnvFiles = envFiles
+
+	// Services: format is name:port:ENV_VAR
+	if len(services) > 0 {
+		cfg.Services = map[string]config.Service{}
+		for _, s := range services {
+			parts := strings.SplitN(s, ":", 3)
+			if len(parts) != 3 {
+				return fmt.Errorf("invalid service format %q — expected name:port:ENV_VAR", s)
+			}
+			name := parts[0]
+			port, err := strconv.Atoi(parts[1])
+			if err != nil || port <= 0 || port > 65535 {
+				return fmt.Errorf("invalid port %q for service %q", parts[1], name)
+			}
+			cfg.Services[name] = config.Service{Port: port, Env: parts[2]}
+		}
+	}
+
+	// Env vars: format is KEY=VALUE
+	if len(envVars) > 0 {
+		cfg.Env = map[string]string{}
+		for _, e := range envVars {
+			k, v, ok := strings.Cut(e, "=")
+			if !ok {
+				return fmt.Errorf("invalid env format %q — expected KEY=VALUE", e)
+			}
+			cfg.Env[k] = v
+		}
+	}
+
+	// Tmux config: built from --pane, --tmux-mode, --tmux-layout
+	if len(panes) > 0 || tmuxMode != "" || tmuxLayout != "" {
+		tmuxCfg := &config.TmuxConfig{}
+		if tmuxMode != "" {
+			tmuxCfg.Mode = tmuxMode
+		}
+		if tmuxLayout != "" {
+			tmuxCfg.Layout = tmuxLayout
+		}
+
+		// Panes: format is command[:name[:optional]]
+		for _, p := range panes {
+			parts := strings.SplitN(p, ":", 3)
+			pane := config.Pane{Cmd: parts[0]}
+			if len(parts) >= 2 && parts[1] != "" {
+				pane.Name = parts[1]
+			}
+			if len(parts) >= 3 && parts[2] == "optional" {
+				pane.Optional = true
+			}
+			tmuxCfg.Panes = append(tmuxCfg.Panes, pane)
+		}
+
+		cfg.Tmux = tmuxCfg
+	}
+
+	return writeConfig(cmd, configPath, &cfg)
+}
+
+func runInitInteractive(cmd *cobra.Command, force bool) error {
 	w := cmd.OutOrStdout()
 	scanner := bufio.NewScanner(stdinReader)
 
@@ -41,10 +169,14 @@ func runInit(cmd *cobra.Command, args []string) error {
 
 	configPath := filepath.Join(cwd, config.ConfigFileName)
 	if _, err := os.Stat(configPath); err == nil {
-		fmt.Fprintf(w, "A %s already exists in this directory. Overwrite? [y/N] ", config.ConfigFileName)
-		if !scanYesNo(scanner, false) {
-			fmt.Fprintln(w, "Aborted.")
-			return nil
+		if force {
+			// Skip prompt
+		} else {
+			fmt.Fprintf(w, "A %s already exists in this directory. Overwrite? [y/N] ", config.ConfigFileName)
+			if !scanYesNo(scanner, false) {
+				fmt.Fprintln(w, "Aborted.")
+				return nil
+			}
 		}
 	}
 
@@ -150,7 +282,7 @@ func runInit(cmd *cobra.Command, args []string) error {
 		}
 		tmuxCfg.Layout = layout
 
-		fmt.Fprintf(w, "  Main pane size (e.g. 70%%) []: ")
+		fmt.Fprintf(w, "  Main pane size (e.g. 70%%%%) []: ")
 		mainSize := scanLine(scanner)
 		if mainSize != "" {
 			tmuxCfg.MainSize = mainSize
@@ -171,10 +303,16 @@ func runInit(cmd *cobra.Command, args []string) error {
 				continue
 			}
 
+			fmt.Fprintf(w, "    Pane name (for --with flag, leave empty to skip): ")
+			paneName := scanLine(scanner)
+
 			fmt.Fprintf(w, "    Optional pane? [y/N] ")
 			optional := scanYesNo(scanner, false)
 
 			pane := config.Pane{Cmd: paneCmd}
+			if paneName != "" {
+				pane.Name = paneName
+			}
 			if optional {
 				pane.Optional = true
 			}
@@ -184,25 +322,28 @@ func runInit(cmd *cobra.Command, args []string) error {
 		cfg.Tmux = tmuxCfg
 	}
 
-	// --- Write config ---
-	data, err := yaml.Marshal(&cfg)
+	return writeConfig(cmd, configPath, &cfg)
+}
+
+func writeConfig(cmd *cobra.Command, configPath string, cfg *config.Config) error {
+	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshaling config: %w", err)
 	}
 
-	// Add a header comment
-	header := "# Grove configuration — see https://github.com/grovewtm/grove\n\n"
+	header := "# Grove configuration — run 'grove schema' for full reference\n\n"
 	content := header + string(data)
 
 	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("writing %s: %w", config.ConfigFileName, err)
 	}
 
-	fmt.Fprintf(w, "\nWrote %s\n", configPath)
+	fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", configPath)
 	return nil
 }
 
 // scanLine reads a single line from the scanner and trims whitespace.
+// Returns the text and true if a line was read, or "" and false on EOF.
 func scanLine(scanner *bufio.Scanner) string {
 	if scanner.Scan() {
 		return strings.TrimSpace(scanner.Text())
@@ -210,9 +351,18 @@ func scanLine(scanner *bufio.Scanner) string {
 	return ""
 }
 
+// scannerAtEOF returns true if the scanner has reached EOF.
+func scannerAtEOF(scanner *bufio.Scanner) bool {
+	return scanner.Err() == nil && !scanner.Scan()
+}
+
 // scanYesNo reads a yes/no answer. Returns the default if input is empty.
+// On EOF, always returns false to prevent infinite loops in interactive mode.
 func scanYesNo(scanner *bufio.Scanner, defaultYes bool) bool {
-	input := scanLine(scanner)
+	if !scanner.Scan() {
+		return false // EOF — stop looping
+	}
+	input := strings.TrimSpace(scanner.Text())
 	switch strings.ToLower(input) {
 	case "y", "yes":
 		return true

@@ -19,7 +19,15 @@ environment variable injection, and optional tmux workspace orchestration.
 
 Configure per-project with a .grove.yml and run 'grove create <branch>'
 to get an isolated worktree with the right ports, env vars, and
-optionally a full tmux workspace.`,
+optionally a full tmux workspace.
+
+Key commands:
+  grove init           Create .grove.yml interactively or via flags
+  grove init --service api:4000:PORT --pane nvim   (non-interactive)
+  grove schema         Print the full annotated .grove.yml reference
+  grove create <branch>  Create worktree + workspace
+  grove list           List active worktrees and ports
+  grove clean          Remove stale worktrees`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -32,6 +40,7 @@ optionally a full tmux workspace.`,
 		newCleanCmd(),
 		newListCmd(),
 		newStatusCmd(),
+		newSchemaCmd(),
 		newCompletionCmd(),
 	)
 

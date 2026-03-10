@@ -36,9 +36,11 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	//   - Main size: 70%
 	//   - Add pane? yes
 	//     - Command: nvim
+	//     - Name: (empty)
 	//     - Optional: no
 	//   - Add pane? yes
 	//     - Command: pnpm dev
+	//     - Name: dev
 	//     - Optional: yes
 	//   - Add pane? no
 	input := strings.Join([]string{
@@ -59,9 +61,11 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 		"70%",       // main size
 		"y",         // add pane?
 		"nvim",      // command
+		"",          // pane name (empty)
 		"n",         // optional?
 		"y",         // add pane?
 		"pnpm dev",  // command
+		"dev",       // pane name
 		"y",         // optional?
 		"n",         // add pane?
 	}, "\n")

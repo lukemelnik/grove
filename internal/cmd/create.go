@@ -29,7 +29,26 @@ func newCreateCmd() *cobra.Command {
 		Short: "Create a worktree for the given branch",
 		Long: `Create a git worktree with deterministic port assignment and optional
 tmux workspace. If a tmux config is present in .grove.yml, sets up
-a tmux session/window with panes and environment variables.`,
+a tmux session/window with panes and environment variables.
+
+Branch resolution:
+  1. Branch exists locally — use it
+  2. Branch exists on remote — fetch and create local tracking branch
+  3. Branch is new — create from --from ref (default: origin/main)
+
+Optional panes:
+  Panes marked with "optional: true" in .grove.yml are skipped by default.
+  Include them with --all (all optional panes) or --with <name> (by name).
+
+  Example .grove.yml:
+    tmux:
+      panes:
+        - nvim
+        - cmd: pnpm dev
+          name: dev
+          optional: true
+
+Run 'grove schema' for the full .grove.yml configuration reference.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,
 	}
