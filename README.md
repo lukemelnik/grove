@@ -6,7 +6,7 @@
 [![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white&style=flat-square)](https://go.dev/)
 [![tmux](https://img.shields.io/badge/tmux-3.2+-1BB91F?style=flat-square)](https://github.com/tmux/tmux)
 
-One command gives you a git worktree with its own ports, env vars, and tmux layout. Same branch, same workspace, every time.
+For tmux users who want the worktree convenience of GUI tools like T3 Code and Codex — automatic port assignments for parallel dev servers, isolated environments, and full tmux workspaces, all from one command.
 
 ```bash
 grove create feat/auth
@@ -14,7 +14,7 @@ grove create feat/auth
 ```
 
 - **Deterministic ports** — default branch uses base ports, others get a stable hash offset with no collisions
-- **Layered env** — `.env` files, templated vars (`{{api.port}}`), and CLI overrides, all resolved per-branch
+- **Layered env** — `.env` files symlinked from the main repo, `.env.local` generated per-branch with ports and `{{service.port}}` templates
 - **Tmux workspaces** — from a flat pane list to explicit splits to raw layout strings, four tiers of control
 - **Agent-ready** — auto-JSON when piped, structured errors on stderr, `--dry-run` on destructive commands
 - **Works from anywhere** — run grove commands from any worktree, not just the main repo
