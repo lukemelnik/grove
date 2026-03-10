@@ -332,13 +332,24 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 
 	_, err := m.git.Run(args...)
 	if err != nil {
-		// If git doesn't recognize it as a worktree, clean up manually
+		// If git doesn't recognize it as a worktree, only treat it as ghost
+		// metadata when the path or registration still exists.
 		if strings.Contains(err.Error(), "not a working tree") {
+			registered, listErr := m.hasRegisteredWorktree(branch, wtPath)
+			_, statErr := os.Stat(wtPath)
+			pathExists := statErr == nil
+			if !registered && !pathExists {
+				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
+			}
+			if listErr != nil && !pathExists {
+				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
+			}
+
 			// Prune stale worktree metadata first
 			_ = m.Prune()
 
 			// Remove the leftover directory if it exists
-			if _, statErr := os.Stat(wtPath); statErr == nil {
+			if pathExists {
 				if rmErr := os.RemoveAll(wtPath); rmErr != nil {
 					return nil, fmt.Errorf("removing leftover directory %s: %w", wtPath, rmErr)
 				}
@@ -377,6 +388,21 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 	}
 
 	return result, nil
+}
+
+func (m *Manager) hasRegisteredWorktree(branch, wtPath string) (bool, error) {
+	worktrees, err := m.List()
+	if err != nil {
+		return false, err
+	}
+
+	for _, wt := range worktrees {
+		if wt.Path == wtPath || wt.Branch == branch {
+			return true, nil
+		}
+	}
+
+	return false, nil
 }
 
 // FindByPath finds the worktree info for a given working directory path.

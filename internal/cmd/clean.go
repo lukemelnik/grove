@@ -130,8 +130,9 @@ func runClean(cmd *cobra.Command, args []string) error {
 			destroyTmuxForBranch(cmd, s.Branch, cfg.Tmux)
 		}
 
-		// Remove worktree and delete branch (force since branch is stale)
-		if _, err := wtMgr.Remove(s.Branch, true, true); err != nil {
+		// Stale branches can still have local edits, so only force removal when
+		// the user explicitly asked for it.
+		if _, err := wtMgr.Remove(s.Branch, true, force); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not remove worktree for %s: %v\n", s.Branch, err)
 			continue
 		}

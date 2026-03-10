@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"grove/internal/tmux"
 )
 
 // setupCreateTestRepo creates a temporary git repo with an initial commit,
@@ -76,6 +78,7 @@ env:
 	origGetWd := getWorkingDir
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
+	mockTerminal(t)
 
 	// Run the create command
 	rootCmd := NewRootCmd()
@@ -152,7 +155,7 @@ env:
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"create", "feat/json-test", "--json"})
+	rootCmd.SetArgs([]string{"create", "feat/json-test", "--json", "--no-tmux"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -218,7 +221,7 @@ services:
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"create", "feat/env-override", "--json", "-e", "CUSTOM_VAR=hello", "-e", "ANOTHER=world"})
+	rootCmd.SetArgs([]string{"create", "feat/env-override", "--json", "--no-tmux", "-e", "CUSTOM_VAR=hello", "-e", "ANOTHER=world"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -261,7 +264,7 @@ services:
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"create", "feat/from-ref-test", "--json", "--from", "main"})
+	rootCmd.SetArgs([]string{"create", "feat/from-ref-test", "--json", "--no-tmux", "--from", "main"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -304,6 +307,7 @@ services:
 	origGetWd := getWorkingDir
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
+	mockTerminal(t)
 
 	// First create
 	rootCmd1 := NewRootCmd()
@@ -358,7 +362,7 @@ func TestCreateCmd_MinimalConfig(t *testing.T) {
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"create", "feat/minimal", "--json"})
+	rootCmd.SetArgs([]string{"create", "feat/minimal", "--json", "--no-tmux"})
 
 	err := rootCmd.Execute()
 	if err != nil {
@@ -389,4 +393,118 @@ func TestCreateCmd_MissingBranchArg(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for missing branch argument")
 	}
+}
+
+func TestCreateCmd_JSONOutputStillSetsUpTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitCmd := exec.Command("git", "branch", "feat/json-tmux")
+	gitCmd.Dir = repoDir
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch failed: %s: %v", string(out), err)
+	}
+
+	mockWorkingDir(t, repoDir)
+
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/json-tmux", "--json"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create --json failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	var result createOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON output: %v\nRaw: %s", err, buf.String())
+	}
+	if result.Branch != "feat/json-tmux" {
+		t.Fatalf("expected branch feat/json-tmux, got %s", result.Branch)
+	}
+	if !tmuxCommandSeen(runner, "new-session") {
+		t.Error("expected tmux session creation in JSON mode")
+	}
+	if !tmuxCommandSeen(runner, "attach") && !tmuxCommandSeen(runner, "switch-client") {
+		t.Error("expected explicit JSON mode to preserve attach behavior")
+	}
+}
+
+func TestCreateCmd_AutoJSONSkipsAttachButSetsUpTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitCmd := exec.Command("git", "branch", "feat/auto-json")
+	gitCmd.Dir = repoDir
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch failed: %s: %v", string(out), err)
+	}
+
+	mockWorkingDir(t, repoDir)
+
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return false }
+	t.Cleanup(func() { isTerminal = origIsTerminal })
+
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var outBuf bytes.Buffer
+	var errBuf bytes.Buffer
+	rootCmd.SetOut(&outBuf)
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetArgs([]string{"create", "feat/auto-json"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create auto-JSON failed: %v\nstdout: %s\nstderr: %s", err, outBuf.String(), errBuf.String())
+	}
+
+	var result createOutput
+	if err := json.Unmarshal(outBuf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse auto-JSON output: %v\nRaw: %s", err, outBuf.String())
+	}
+	if result.Branch != "feat/auto-json" {
+		t.Fatalf("expected branch feat/auto-json, got %s", result.Branch)
+	}
+	if !tmuxCommandSeen(runner, "new-session") {
+		t.Error("expected tmux session creation in auto-JSON mode")
+	}
+	if tmuxCommandSeen(runner, "attach") || tmuxCommandSeen(runner, "switch-client") {
+		t.Error("auto-JSON mode should not attach unless explicitly requested")
+	}
+}
+
+func tmuxCommandSeen(runner *recordingTmuxRunner, name string) bool {
+	for _, cmd := range runner.commands {
+		if len(cmd) > 0 && cmd[0] == name {
+			return true
+		}
+	}
+	return false
 }

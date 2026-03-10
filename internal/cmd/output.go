@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
@@ -25,6 +26,25 @@ func shouldOutputJSON(cmd *cobra.Command) bool {
 	return !isTerminal(int(os.Stdout.Fd()))
 }
 
+type reportedError struct {
+	cause error
+}
+
+func (e *reportedError) Error() string {
+	return e.cause.Error()
+}
+
+func (e *reportedError) Unwrap() error {
+	return e.cause
+}
+
+// ErrorAlreadyReported returns true when the command already emitted its
+// structured error output and callers should only preserve the non-zero exit.
+func ErrorAlreadyReported(err error) bool {
+	var reported *reportedError
+	return errors.As(err, &reported)
+}
+
 // outputError writes a structured JSON error to stderr when in JSON mode,
 // or returns the error for normal Cobra error handling otherwise.
 func outputError(cmd *cobra.Command, err error) error {
@@ -34,8 +54,7 @@ func outputError(cmd *cobra.Command, err error) error {
 		}{Error: err.Error()}
 		data, _ := json.Marshal(msg)
 		fmt.Fprintln(cmd.ErrOrStderr(), string(data))
-		// Return the original error so the CLI exits with a non-zero code.
-		return err
+		return &reportedError{cause: err}
 	}
 	return err
 }
