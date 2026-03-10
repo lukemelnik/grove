@@ -5,11 +5,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via ldflags.
+var Version = "dev"
+
 // NewRootCmd creates the root grove command.
 func NewRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:   "grove",
-		Short: "Deterministic worktree workspaces",
+		Use:     "grove",
+		Short:   "Deterministic worktree workspaces",
+		Version: Version,
 		Long: `Grove manages git worktrees with deterministic port assignment,
 environment variable injection, and optional tmux workspace orchestration.
 
@@ -27,6 +31,7 @@ optionally a full tmux workspace.`,
 		newDeleteCmd(),
 		newListCmd(),
 		newStatusCmd(),
+		newCompletionCmd(),
 	)
 
 	return rootCmd

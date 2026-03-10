@@ -78,7 +78,7 @@
 - [x] Implement `grove status` (detect worktree from cwd, show branch/path/ports/env, --json output)
 - [x] Add `HasSession`, `HasWindow`, `Attach` methods to tmux Manager
 - [x] Add `ghCommandRunner` and `ghAvailable` vars for testable `gh` integration
-- [ ] Implement `grove init` (interactive setup — deferred to Sprint 6)
+- [x] Implement `grove init` (interactive setup — deferred to Sprint 6)
 - [x] Write integration tests for `grove attach` (no worktree error, no tmux config, tmux session creation, missing arg)
 - [x] Write integration tests for `grove delete` (basic, keep-branch, open PR aborts, force with open PR, gh not available, missing arg, checkOpenPRs unit tests)
 - [x] Write integration tests for `grove list` (empty, with worktrees, JSON output, no services)
@@ -87,12 +87,19 @@
 
 **Status: COMPLETE**
 
-### Sprint 6: Polish & Distribution
-- [ ] Add shell completions (bash, zsh, fish)
-- [ ] Set up GoReleaser
-- [ ] Set up Homebrew tap
-- [ ] Add error messages and user-facing output polish
-- [ ] Final testing and documentation
+### Sprint 6: `grove init`, Shell Completions, and Final Polish
+- [x] Implement `grove init` interactive setup (services, worktree dir, env files, tmux config)
+- [x] Use `bufio.Scanner` for stdin input with testable `stdinReader` var
+- [x] Handle existing `.grove.yml` with overwrite confirmation
+- [x] Validate port input, default env var names, .env file detection
+- [x] Add `grove completion <shell>` command (bash, zsh, fish via Cobra built-in)
+- [x] Add `--version` flag to root command (set via `Version` var / ldflags at build time)
+- [x] Consistent exit codes: 0 success, 1 error (via `SilenceUsage`/`SilenceErrors` + `os.Exit(1)` in main)
+- [x] Consistent `--json` output across `create`, `list`, `status` commands
+- [x] Write 7 unit tests for `grove init` (full interactive, minimal, overwrite abort/confirm, invalid port, default env var, .env detection)
+- [x] Write 6 unit tests for shell completions and version flag (bash, zsh, fish, invalid shell, no args, --version)
+
+**Status: COMPLETE**
 
 ## Alerts
 - No alerts for Sprint 1.
@@ -101,3 +108,4 @@
 - Sprint 4: Pulled `grove create` tmux wiring forward from Sprint 5 into Sprint 4, since it naturally completes with the tmux manager. Sprint 5 marked that item as done. Added `tmuxRunnerFactory` var to `create.go` for test overridability.
 - Sprint 5: Deferred `grove init` (interactive setup) to Sprint 6 — it is independent of the other commands and fits better with polish/distribution. Added public `Attach` method to tmux Manager (refactored private `attach` to `doAttach`) for use by the `grove attach` command. Port computation in `grove list` and `grove status` uses a pass-through port checker (always returns true) since we want deterministic assignment, not availability checking, when displaying info.
 - Sprint 5 review: Fixed `HasWindow` false positive — some tmux versions return exit 0 with empty output when no windows match; now checks for non-empty output. Fixed `doAttach` in window mode outside tmux — `select-window` requires an active client, so now finds the parent session via `list-windows`, selects the window, and attaches to the session. Added tests for both fixes.
+- Sprint 6: GoReleaser and Homebrew tap setup deferred — these are distribution concerns that require repository infrastructure (GitHub Actions, a separate tap repo). The CLI itself is feature-complete. Marked `grove init` in Sprint 5's checklist as done since it was implemented here. All 6 sprints are now complete.
