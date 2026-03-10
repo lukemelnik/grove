@@ -117,13 +117,27 @@ tmux:
 
 ## Commands
 
-### `grove init`
+### `grove schema`
 
-Interactive setup that creates `.grove.yml`. Walks you through worktree directory, env files, services, and tmux configuration.
+Print the full annotated `.grove.yml` reference — every field, its type, default, and description.
 
 ```bash
-grove init
+grove schema           # print full config reference
+grove schema > .grove.yml  # use as a starting template
 ```
+
+### `grove init`
+
+Create `.grove.yml` interactively or via flags. Non-interactive mode is useful for agents and scripts.
+
+```bash
+grove init                                          # interactive
+grove init --service api:4000:PORT --pane nvim      # non-interactive
+grove init --service api:4000:PORT --service web:3000:WEB_PORT \
+  --env-file .env --pane nvim --pane "pnpm dev:dev:optional"
+```
+
+Service format: `name:port:ENV_VAR`. Pane format: `command[:name[:optional]]`.
 
 ### `grove create <branch>`
 
@@ -367,15 +381,30 @@ tmux:
 
 **Session mode** gives each worktree a fully isolated tmux session with its own environment.
 
-## Agent-Friendly Output
+## Agent / CI Usage
 
-Grove auto-detects when stdout isn't a terminal and switches to structured JSON — no `--json` flag needed. Errors go to stderr as JSON too.
+Grove is designed to be fully operable by AI agents and scripts without human interaction.
 
+**Discover the config format** — no docs needed:
+```bash
+grove schema            # full annotated .grove.yml reference
+grove create --help     # explains branch resolution, optional panes, all flags
+```
+
+**Create configs non-interactively:**
+```bash
+grove init --service api:4000:PORT --service web:3000:WEB_PORT \
+  --env-file .env --pane nvim --pane "pnpm dev:dev:optional"
+```
+
+**Structured output** — auto-JSON when piped, structured errors on stderr:
 ```bash
 grove list              # terminal: human-readable text
 output=$(grove list)    # piped: JSON automatically
 grove list --json       # force JSON in terminal
 ```
+
+**Safe mutations** — `grove clean --dry-run` previews before acting, `--force` skips prompts.
 
 ## Example Configs
 
