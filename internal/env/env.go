@@ -62,11 +62,19 @@ func ParseEnvContent(content string) (map[string]string, error) {
 			continue
 		}
 
-		// Handle quoted values
+		// Handle quoted values — preserve content inside quotes verbatim.
+		// For unquoted values, strip inline comments (e.g., "value # comment").
+		quoted := false
 		if len(value) >= 2 {
 			if (value[0] == '"' && value[len(value)-1] == '"') ||
 				(value[0] == '\'' && value[len(value)-1] == '\'') {
 				value = value[1 : len(value)-1]
+				quoted = true
+			}
+		}
+		if !quoted {
+			if idx := strings.Index(value, " #"); idx >= 0 {
+				value = strings.TrimRight(value[:idx], " ")
 			}
 		}
 

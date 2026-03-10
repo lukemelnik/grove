@@ -509,3 +509,37 @@ func TestParseEnvContent_QuotedWithSpaces(t *testing.T) {
 		t.Errorf("expected 'hello   world', got %q", result["MSG"])
 	}
 }
+
+func TestParseEnvContent_InlineComments(t *testing.T) {
+	content := `
+KEY1=value1 # this is a comment
+KEY2="value2 # not a comment"
+KEY3='value3 # not a comment'
+KEY4=value4
+KEY5=no_comment_here
+`
+	result, err := ParseEnvContent(content)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Unquoted: inline comment stripped
+	if result["KEY1"] != "value1" {
+		t.Errorf("expected KEY1=value1, got %q", result["KEY1"])
+	}
+	// Double-quoted: # preserved inside quotes
+	if result["KEY2"] != "value2 # not a comment" {
+		t.Errorf("expected KEY2='value2 # not a comment', got %q", result["KEY2"])
+	}
+	// Single-quoted: # preserved inside quotes
+	if result["KEY3"] != "value3 # not a comment" {
+		t.Errorf("expected KEY3='value3 # not a comment', got %q", result["KEY3"])
+	}
+	// No inline comment
+	if result["KEY4"] != "value4" {
+		t.Errorf("expected KEY4=value4, got %q", result["KEY4"])
+	}
+	if result["KEY5"] != "no_comment_here" {
+		t.Errorf("expected KEY5=no_comment_here, got %q", result["KEY5"])
+	}
+}
