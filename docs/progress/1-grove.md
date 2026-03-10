@@ -64,3 +64,4 @@
 
 ## Alerts
 - No alerts for Sprint 1.
+- Sprint 2: Fixed .env inline comment stripping — docstring claimed support but implementation was missing. Added implementation and test (`TestParseEnvContent_InlineComments`).
