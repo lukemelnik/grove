@@ -1307,15 +1307,17 @@ func TestHasSession(t *testing.T) {
 func TestHasWindow(t *testing.T) {
 	t.Run("window exists", func(t *testing.T) {
 		runner := newMockRunner()
+		// HasWindow now checks for non-empty output, so mock must return the window name.
+		runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},test-window}"] = "test-window"
 		mgr := NewManager(runner)
 
 		got := mgr.HasWindow("test-window")
 		if !got {
-			t.Error("expected HasWindow to return true when no error")
+			t.Error("expected HasWindow to return true when window exists")
 		}
 	})
 
-	t.Run("window does not exist", func(t *testing.T) {
+	t.Run("window does not exist (error)", func(t *testing.T) {
 		runner := newMockRunner()
 		runner.errors["list-windows -a -F #{window_name} -f #{==:#{window_name},missing-window}"] = fmt.Errorf("no windows found")
 		mgr := NewManager(runner)
@@ -1323,6 +1325,18 @@ func TestHasWindow(t *testing.T) {
 		got := mgr.HasWindow("missing-window")
 		if got {
 			t.Error("expected HasWindow to return false when error")
+		}
+	})
+
+	t.Run("window does not exist (empty output)", func(t *testing.T) {
+		runner := newMockRunner()
+		// Command succeeds but returns empty output (no matching windows).
+		runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},absent-window}"] = ""
+		mgr := NewManager(runner)
+
+		got := mgr.HasWindow("absent-window")
+		if got {
+			t.Error("expected HasWindow to return false when output is empty")
 		}
 	})
 }
@@ -1365,6 +1379,8 @@ func TestAttach_WindowMode(t *testing.T) {
 	t.Setenv("TMUX", "")
 
 	runner := newMockRunner()
+	// findWindowSession needs list-windows to return a session name
+	runner.outputs["list-windows -a -F #{session_name} -f #{==:#{window_name},test-window}"] = "my-session"
 	mgr := NewManager(runner)
 
 	err := mgr.Attach("test-window", "window")
@@ -1372,9 +1388,34 @@ func TestAttach_WindowMode(t *testing.T) {
 		t.Fatalf("Attach failed: %v", err)
 	}
 
-	idx := runner.findCommand("select-window", "-t", "test-window")
+	// Should select the window and then attach to the parent session
+	selectIdx := runner.findCommand("select-window", "-t", "my-session:test-window")
+	if selectIdx < 0 {
+		t.Errorf("expected select-window with session:window target:\n%s", runner.commandString())
+	}
+	attachIdx := runner.findCommand("attach", "-t", "my-session")
+	if attachIdx < 0 {
+		t.Errorf("expected tmux attach to parent session:\n%s", runner.commandString())
+	}
+}
+
+func TestAttach_WindowMode_Fallback(t *testing.T) {
+	t.Setenv("TMUX", "")
+
+	runner := newMockRunner()
+	// findWindowSession fails — no matching window found
+	runner.errors["list-windows -a -F #{session_name} -f #{==:#{window_name},test-window}"] = fmt.Errorf("no windows")
+	mgr := NewManager(runner)
+
+	err := mgr.Attach("test-window", "window")
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+
+	// Should fall back to direct attach with the window name
+	idx := runner.findCommand("attach", "-t", "test-window")
 	if idx < 0 {
-		t.Errorf("expected select-window:\n%s", runner.commandString())
+		t.Errorf("expected fallback tmux attach:\n%s", runner.commandString())
 	}
 }
 
