@@ -13,7 +13,7 @@ grove create feat/auth
 # worktree + ports + env + tmux — done
 ```
 
-- **Deterministic ports** — branch name hashes to a stable offset, no collisions across worktrees
+- **Deterministic ports** — default branch uses base ports, others get a stable hash offset with no collisions
 - **Layered env** — `.env` files, templated vars (`{{api.port}}`), and CLI overrides, all resolved per-branch
 - **Tmux workspaces** — from a flat pane list to explicit splits to raw layout strings, four tiers of control
 - **Agent-ready** — auto-JSON when piped, structured errors on stderr, `--dry-run` on destructive commands
@@ -101,8 +101,9 @@ tmux:
     - nvim
     - claude --model sonnet
     - cmd: pnpm dev
-      optional: true
+      setup: pnpm install
       name: dev
+      optional: true
 ```
 
 ### Config Reference
@@ -254,14 +255,16 @@ Grove walks up from your current directory looking for `.grove.yml`. If it doesn
 
 Ports are assigned **deterministically** based on the branch name. The same branch always gets the same ports, no matter when or how many times you run `grove create`.
 
+The **default branch** (main/master) uses the base ports directly — `api: 4000` and `web: 3000`. All other branches get a hash-based offset:
+
 ```
 offset = md5(branch_name) mod 3000
 assigned_port = base_port + offset
 ```
 
-For example, with services `api: 4000` and `web: 3000`, the branch `feat/auth` might get offset 45, giving you `api: 4045` and `web: 3045`.
+For example, `feat/auth` might get offset 45, giving you `api: 4045` and `web: 3045`.
 
-All services share the same offset, so port relationships are preserved. Browser-restricted ports (like 6000, 4045, etc.) are automatically avoided.
+All services share the same offset, so port relationships are preserved. Browser-restricted ports (from the WHATWG Fetch spec) are automatically avoided — and rejected at config time if used as base ports.
 
 ### Environment Variables
 
@@ -367,6 +370,29 @@ grove create feat/auth               # Just nvim + claude
 grove create feat/auth --with dev    # nvim + claude + pnpm dev
 grove create feat/auth --all         # Everything
 ```
+
+### Setup Commands
+
+Run a prerequisite before the main command — like `pnpm install` before `pnpm dev`. Setup always executes; the main command follows based on `autorun`.
+
+```yaml
+tmux:
+  panes:
+    - nvim
+    - cmd: pnpm dev
+      setup: pnpm install       # runs first, then pnpm dev starts
+    - cmd: pnpm test
+      setup: pnpm install
+      autorun: false             # install runs, then "pnpm test" is typed but not executed
+```
+
+| `setup` | `cmd` | `autorun` | What happens |
+|---------|-------|-----------|-------------|
+| — | X | true | Runs `X` |
+| — | X | false | Types `X`, waits for Enter |
+| S | — | — | Runs `S` |
+| S | X | true | Runs `S && X` |
+| S | X | false | Runs `S`, then types `X` |
 
 ### Session vs Window Mode
 

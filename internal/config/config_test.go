@@ -672,6 +672,88 @@ tmux:
 	}
 }
 
+func TestParse_SetupField(t *testing.T) {
+	yaml := []byte(`
+tmux:
+  panes:
+    - cmd: pnpm dev
+      setup: pnpm install
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Tmux.Panes[0].Setup != "pnpm install" {
+		t.Errorf("expected setup 'pnpm install', got %q", cfg.Tmux.Panes[0].Setup)
+	}
+	if cfg.Tmux.Panes[0].Cmd != "pnpm dev" {
+		t.Errorf("expected cmd 'pnpm dev', got %q", cfg.Tmux.Panes[0].Cmd)
+	}
+}
+
+func TestParse_AutorunField(t *testing.T) {
+	yaml := []byte(`
+tmux:
+  panes:
+    - cmd: pnpm dev
+      autorun: false
+    - nvim
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if cfg.Tmux.Panes[0].ShouldAutorun() {
+		t.Error("expected autorun false for first pane")
+	}
+	if !cfg.Tmux.Panes[1].ShouldAutorun() {
+		t.Error("expected autorun true (default) for second pane")
+	}
+}
+
+func TestParse_SetupWithAutorunFalse(t *testing.T) {
+	yaml := []byte(`
+tmux:
+  panes:
+    - cmd: pnpm dev
+      setup: pnpm install
+      autorun: false
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	p := cfg.Tmux.Panes[0]
+	if p.Setup != "pnpm install" {
+		t.Errorf("expected setup 'pnpm install', got %q", p.Setup)
+	}
+	if p.Cmd != "pnpm dev" {
+		t.Errorf("expected cmd 'pnpm dev', got %q", p.Cmd)
+	}
+	if p.ShouldAutorun() {
+		t.Error("expected autorun false")
+	}
+}
+
+func TestParse_BlockedBasePort(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port: 6000
+    env: PORT
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for blocked base port 6000")
+	}
+	if !strings.Contains(err.Error(), "browser-restricted") {
+		t.Errorf("expected browser-restricted error, got: %v", err)
+	}
+}
+
 func TestDiscover_SymlinkDir(t *testing.T) {
 	// Config in a parent dir reached via a symlinked child
 	realDir := t.TempDir()
