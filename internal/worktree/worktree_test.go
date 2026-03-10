@@ -245,7 +245,7 @@ func TestManager_Create_LocalBranch(t *testing.T) {
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/auth", "abc123", nil)
-	git.On("worktree add /worktrees/feat-auth feat/auth", "", nil)
+	git.On("worktree add -- /worktrees/feat-auth feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/auth", "")
@@ -267,8 +267,8 @@ func TestManager_Create_RemoteBranch(t *testing.T) {
 	git.On("rev-parse --verify refs/heads/feat/auth", "", fmt.Errorf("not found"))
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/auth", "abc123", nil)
-	git.On("branch --track feat/auth origin/feat/auth", "", nil)
-	git.On("worktree add /worktrees/feat-auth feat/auth", "", nil)
+	git.On("branch --track -- feat/auth origin/feat/auth", "", nil)
+	git.On("worktree add -- /worktrees/feat-auth feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/auth", "")
@@ -291,8 +291,8 @@ func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
-	git.On("branch feat/new refs/remotes/origin/main", "", nil)
-	git.On("worktree add /worktrees/feat-new feat/new", "", nil)
+	git.On("branch -- feat/new refs/remotes/origin/main", "", nil)
+	git.On("worktree add -- /worktrees/feat-new feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/new", "")
@@ -314,8 +314,8 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	git.On("rev-parse --verify refs/heads/feat/new", "", fmt.Errorf("not found"))
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
-	git.On("branch feat/new origin/develop", "", nil)
-	git.On("worktree add /worktrees/feat-new feat/new", "", nil)
+	git.On("branch -- feat/new origin/develop", "", nil)
+	git.On("worktree add -- /worktrees/feat-new feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
 	result, err := mgr.Create("feat/new", "origin/develop")
@@ -328,7 +328,7 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	if result.Resolution != BranchNew {
 		t.Errorf("expected resolution=new, got %s", result.Resolution)
 	}
-	if !git.wasCalled("branch feat/new origin/develop") {
+	if !git.wasCalled("branch -- feat/new origin/develop") {
 		t.Error("expected branch creation from origin/develop")
 	}
 }
@@ -336,30 +336,59 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 func TestManager_Remove(t *testing.T) {
 	t.Run("remove worktree and branch", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove --force /worktrees/feat-auth", "", nil)
-		git.On("branch -D feat/auth", "", nil)
+		git.On("worktree remove /worktrees/feat-auth", "", nil)
+		git.On("branch -D -- feat/auth", "", nil)
 
 		mgr := NewManager(git, "/project", "/worktrees")
-		err := mgr.Remove("feat/auth", true)
+		_, err := mgr.Remove("feat/auth", true, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !git.wasCalled("branch -D feat/auth") {
+		if !git.wasCalled("branch -D -- feat/auth") {
 			t.Error("expected branch deletion")
 		}
 	})
 
 	t.Run("remove worktree keep branch", func(t *testing.T) {
 		git := newMockGitRunner()
-		git.On("worktree remove --force /worktrees/feat-auth", "", nil)
+		git.On("worktree remove /worktrees/feat-auth", "", nil)
 
 		mgr := NewManager(git, "/project", "/worktrees")
-		err := mgr.Remove("feat/auth", false)
+		_, err := mgr.Remove("feat/auth", false, false)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if git.wasCalled("branch -D feat/auth") {
+		if git.wasCalled("branch -D -- feat/auth") {
 			t.Error("branch should not have been deleted")
+		}
+	})
+
+	t.Run("force remove dirty worktree", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("worktree remove --force /worktrees/feat-auth", "", nil)
+		git.On("branch -D -- feat/auth", "", nil)
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		_, err := mgr.Remove("feat/auth", true, true)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !git.wasCalled("worktree remove --force /worktrees/feat-auth") {
+			t.Error("expected --force flag when force=true")
+		}
+	})
+
+	t.Run("non-force remove dirty worktree fails", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("worktree remove /worktrees/feat-dirty", "", fmt.Errorf("git worktree remove: has uncommitted changes"))
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		_, err := mgr.Remove("feat/dirty", true, false)
+		if err == nil {
+			t.Fatal("expected error when removing dirty worktree without force")
+		}
+		if !strings.Contains(err.Error(), "uncommitted changes") {
+			t.Errorf("expected 'uncommitted changes' in error, got: %v", err)
 		}
 	})
 }
@@ -569,8 +598,8 @@ func TestIntegration_RemoveWorktree(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Remove worktree (keep branch)
-	err = mgr.Remove("feat/remove-test", false)
+	// Remove worktree (keep branch, no force)
+	_, err = mgr.Remove("feat/remove-test", false, false)
 	if err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
@@ -614,7 +643,7 @@ func TestIntegration_RemoveWorktreeAndBranch(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	err = mgr.Remove("feat/remove-branch-test", true)
+	_, err = mgr.Remove("feat/remove-branch-test", true, false)
 	if err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
