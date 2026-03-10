@@ -102,19 +102,26 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		portAssignment = &ports.Assignment{Ports: map[string]int{}}
 	}
 
-	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot, nil)
-	if err != nil {
-		return fmt.Errorf("resolving environment: %w", err)
+	// Ensure .env files are symlinked and .env.local is up to date
+	if len(cfg.EnvFiles) > 0 {
+		if err := env.SymlinkEnvFiles(cfg.EnvFiles, projectRoot, found.Path); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
+		}
+		managed := env.ManagedVars(cfg, portAssignment.Ports)
+		if len(managed) > 0 {
+			mappings := env.MapManagedToEnvFiles(cfg, managed, projectRoot)
+			if err := env.WriteEnvLocals(mappings, found.Path); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
+			}
+		}
 	}
 
-	managedKeys := env.ManagedKeys(cfg, nil)
-	sharedEnv, managedEnv := env.SplitEnv(resolvedEnv, managedKeys)
+	managed := env.ManagedVars(cfg, portAssignment.Ports)
 
 	tmuxOpts := tmux.Options{
 		Branch:       branch,
 		WorktreePath: found.Path,
-		SharedEnv:    sharedEnv,
-		ManagedEnv:   managedEnv,
+		Env:          managed,
 		TmuxConfig:   tmuxCfg,
 		IncludeAll:   false,
 		IncludeWith:  nil,

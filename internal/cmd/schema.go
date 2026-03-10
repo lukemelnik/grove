@@ -15,8 +15,10 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 # Default: "../.grove-worktrees"
 worktree_dir: ../.grove-worktrees
 
-# Env files to load. All variables are passed through to every worktree.
-# Paths are relative to the project root.
+# Env files to load. Paths are relative to the project root.
+# In worktrees, these files are symlinked from the main repo.
+# Grove writes .env.local files next to each symlink with
+# branch-specific port assignments and template-resolved vars.
 env_files:
   - .env
   - apps/api/.env

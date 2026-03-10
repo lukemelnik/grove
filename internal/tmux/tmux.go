@@ -116,13 +116,10 @@ type Options struct {
 	// Branch is the branch name (used for naming).
 	Branch string
 
-	// SharedEnv has env vars from .env files — same for all branches.
-	// Injected via set-environment (safe to share across windows).
-	SharedEnv map[string]string
-
-	// ManagedEnv has branch-specific env vars (ports, env block, overrides).
-	// Injected via -e flags per-pane to prevent leaking between windows.
-	ManagedEnv map[string]string
+	// Env has grove-managed env vars (ports, env block).
+	// Injected via set-environment as a fallback for non-dotenv tools.
+	// Primary mechanism is .env.local files written into the worktree.
+	Env map[string]string
 
 	// TmuxConfig is the tmux configuration from .grove.yml.
 	TmuxConfig *config.TmuxConfig
@@ -148,61 +145,43 @@ func (m *Manager) Create(opts Options) error {
 		mode = "window"
 	}
 
-	// Merge shared + managed for the full env set
-	fullEnv := make(map[string]string)
-	for k, v := range opts.SharedEnv {
-		fullEnv[k] = v
-	}
-	for k, v := range opts.ManagedEnv {
-		fullEnv[k] = v
-	}
-
-	// Step 1: Create session or window.
-	// -e flags carry only branch-specific (managed) env to avoid leaking ports
-	// between windows. Shared env (.env files) is injected via set-environment.
+	// Step 1: Create session or window
 	switch mode {
 	case "session":
-		if err := m.createSession(name, opts.WorktreePath, opts.ManagedEnv); err != nil {
+		if err := m.createSession(name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux session: %w", err)
 		}
 	case "window":
 		session, err := m.currentSession()
 		if err != nil {
 			// Fallback to session mode if not inside tmux
-			if err := m.createSession(name, opts.WorktreePath, opts.ManagedEnv); err != nil {
+			if err := m.createSession(name, opts.WorktreePath); err != nil {
 				return fmt.Errorf("creating tmux session (fallback): %w", err)
 			}
 			mode = "session"
 			break
 		}
-		if err := m.createWindow(session, name, opts.WorktreePath, opts.ManagedEnv); err != nil {
+		if err := m.createWindow(session, name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
 		}
 	}
 
-	// Step 2: Inject shared env via set-environment.
-	// In session mode: inject ALL env (shared + managed) so manually created panes inherit.
-	// In window mode: inject only shared env (same for all branches, safe to share).
-	if mode == "session" {
-		if err := m.injectEnv(name, fullEnv); err != nil {
+	// Step 2: Inject managed env via set-environment (session mode only).
+	// This is a fallback for tools that read env vars directly instead of .env files.
+	// In window mode, set-environment would leak between windows, so we skip it —
+	// tools should read .env/.env.local files instead.
+	if mode == "session" && len(opts.Env) > 0 {
+		if err := m.injectEnv(name, opts.Env); err != nil {
 			return fmt.Errorf("injecting environment: %w", err)
-		}
-	} else {
-		// Window mode: shared env via set-environment on parent session
-		session, err := m.currentSession()
-		if err == nil && len(opts.SharedEnv) > 0 {
-			if err := m.injectEnv(session, opts.SharedEnv); err != nil {
-				return fmt.Errorf("injecting shared environment: %w", err)
-			}
 		}
 	}
 
 	// Step 3: Filter panes (handle optional)
 	panes := filterPanes(cfg.Panes, opts.IncludeAll, opts.IncludeWith)
 
-	// Step 4: Create panes with -e for managed env only
+	// Step 4: Create panes
 	target := name // session or window name
-	if err := m.createPanes(target, opts.WorktreePath, panes, cfg, opts.ManagedEnv); err != nil {
+	if err := m.createPanes(target, opts.WorktreePath, panes, cfg); err != nil {
 		return fmt.Errorf("creating panes: %w", err)
 	}
 
@@ -256,21 +235,15 @@ func (m *Manager) Destroy(branch string, cfg *config.TmuxConfig) error {
 	return nil
 }
 
-// createSession creates a new tmux session with per-pane env via -e flags.
-func (m *Manager) createSession(name, workdir string, env map[string]string) error {
-	args := []string{"new-session", "-d", "-s", name}
-	args = append(args, envFlags(env)...)
-	args = append(args, "-c", workdir)
-	_, err := m.runner.Run(args...)
+// createSession creates a new detached tmux session.
+func (m *Manager) createSession(name, workdir string) error {
+	_, err := m.runner.Run("new-session", "-d", "-s", name, "-c", workdir)
 	return err
 }
 
-// createWindow creates a new window in the current session with per-pane env via -e flags.
-func (m *Manager) createWindow(session, name, workdir string, env map[string]string) error {
-	args := []string{"new-window", "-t", session, "-n", name}
-	args = append(args, envFlags(env)...)
-	args = append(args, "-c", workdir)
-	_, err := m.runner.Run(args...)
+// createWindow creates a new window in the given session.
+func (m *Manager) createWindow(session, name, workdir string) error {
+	_, err := m.runner.Run("new-window", "-t", session, "-n", name, "-c", workdir)
 	return err
 }
 
@@ -301,7 +274,7 @@ func (m *Manager) injectEnv(session string, env map[string]string) error {
 }
 
 // createPanes creates panes according to the layout tier.
-func (m *Manager) createPanes(target, workdir string, panes []config.Pane, cfg *config.TmuxConfig, env map[string]string) error {
+func (m *Manager) createPanes(target, workdir string, panes []config.Pane, cfg *config.TmuxConfig) error {
 	if len(panes) == 0 {
 		return nil
 	}
@@ -310,13 +283,13 @@ func (m *Manager) createPanes(target, workdir string, panes []config.Pane, cfg *
 
 	switch tier {
 	case tierPreset:
-		return m.createPanesPreset(target, workdir, panes, effectiveLayout(cfg), "", env)
+		return m.createPanesPreset(target, workdir, panes, effectiveLayout(cfg), "")
 	case tierPresetWithSize:
-		return m.createPanesPreset(target, workdir, panes, effectiveLayout(cfg), cfg.MainSize, env)
+		return m.createPanesPreset(target, workdir, panes, effectiveLayout(cfg), cfg.MainSize)
 	case tierExplicitSplits:
-		return m.createPanesExplicit(target, workdir, panes, env)
+		return m.createPanesExplicit(target, workdir, panes)
 	case tierRawLayout:
-		return m.createPanesRaw(target, workdir, panes, cfg.Layout, env)
+		return m.createPanesRaw(target, workdir, panes, cfg.Layout)
 	}
 	return nil
 }
@@ -330,7 +303,7 @@ func effectiveLayout(cfg *config.TmuxConfig) string {
 }
 
 // createPanesPreset handles Tier 1 and Tier 2 layouts.
-func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane, layout, mainSize string, env map[string]string) error {
+func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane, layout, mainSize string) error {
 	// First pane already exists in the session/window. Send command to it.
 	if panes[0].Cmd != "" || panes[0].Setup != "" {
 		if err := m.sendPaneCommands(target, panes[0]); err != nil {
@@ -338,12 +311,9 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 		}
 	}
 
-	// Create additional panes via split-window with -e flags for env
+	// Create additional panes via split-window
 	for i := 1; i < len(panes); i++ {
-		args := []string{"split-window", "-h", "-t", target}
-		args = append(args, envFlags(env)...)
-		args = append(args, "-c", workdir)
-		_, err := m.runner.Run(args...)
+		_, err := m.runner.Run("split-window", "-h", "-t", target, "-c", workdir)
 		if err != nil {
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
@@ -390,13 +360,13 @@ func (m *Manager) createPanesPreset(target, workdir string, panes []config.Pane,
 // (establishing the structural layout), then recurse into each region. Otherwise,
 // depth-first processing leaves the active pane inside a container, causing the next
 // sibling to split the wrong pane.
-func (m *Manager) createPanesExplicit(target, workdir string, panes []config.Pane, env map[string]string) error {
+func (m *Manager) createPanesExplicit(target, workdir string, panes []config.Pane) error {
 	// Get the initial pane ID (the one created with the session/window)
 	initialID, err := m.runner.Run("display-message", "-p", "-t", target, "#{pane_id}")
 	if err != nil {
 		return fmt.Errorf("getting initial pane id: %w", err)
 	}
-	return m.walkPanes(strings.TrimSpace(initialID), workdir, panes, "h", env)
+	return m.walkPanes(strings.TrimSpace(initialID), workdir, panes, "h")
 }
 
 // walkPanes recursively creates panes from a split tree using pane ID targeting.
@@ -405,12 +375,10 @@ func (m *Manager) createPanesExplicit(target, workdir string, panes []config.Pan
 //
 // Phase 1: Create all sibling splits to establish structure, collecting pane IDs.
 // Phase 2: Fill each pane with its command or recurse into containers.
-func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, splitDir string, env map[string]string) error {
+func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, splitDir string) error {
 	if len(panes) == 0 {
 		return nil
 	}
-
-	eFlags := envFlags(env)
 
 	// Phase 1: Create structural splits for all siblings.
 	// First pane reuses parentPaneID; remaining panes split from it.
@@ -418,9 +386,7 @@ func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, s
 	paneIDs[0] = parentPaneID
 
 	for i := 1; i < len(panes); i++ {
-		splitArgs := []string{"split-window", "-" + splitDir, "-t", parentPaneID, "-P", "-F", "#{pane_id}"}
-		splitArgs = append(splitArgs, eFlags...)
-		splitArgs = append(splitArgs, "-c", workdir)
+		splitArgs := []string{"split-window", "-" + splitDir, "-t", parentPaneID, "-P", "-F", "#{pane_id}", "-c", workdir}
 		if panes[i].Size != "" {
 			pct, err := parseSizePercent(panes[i].Size)
 			if err == nil {
@@ -441,7 +407,7 @@ func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, s
 			if p.Split == "horizontal" {
 				nestedDir = "h"
 			}
-			if err := m.walkPanes(paneIDs[i], workdir, p.Panes, nestedDir, env); err != nil {
+			if err := m.walkPanes(paneIDs[i], workdir, p.Panes, nestedDir); err != nil {
 				return err
 			}
 			continue
@@ -462,7 +428,7 @@ func (m *Manager) walkPanes(parentPaneID, workdir string, panes []config.Pane, s
 }
 
 // createPanesRaw handles Tier 4: raw tmux layout string.
-func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, rawLayout string, env map[string]string) error {
+func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, rawLayout string) error {
 	// First pane already exists. Send command.
 	if len(panes) > 0 && (panes[0].Cmd != "" || panes[0].Setup != "") {
 		if err := m.sendPaneCommands(target, panes[0]); err != nil {
@@ -470,13 +436,9 @@ func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, ra
 		}
 	}
 
-	// Create additional panes with -e flags for env
-	eFlags := envFlags(env)
+	// Create additional panes
 	for i := 1; i < len(panes); i++ {
-		args := []string{"split-window", "-h", "-t", target}
-		args = append(args, eFlags...)
-		args = append(args, "-c", workdir)
-		_, err := m.runner.Run(args...)
+		_, err := m.runner.Run("split-window", "-h", "-t", target, "-c", workdir)
 		if err != nil {
 			return fmt.Errorf("splitting pane %d: %w", i, err)
 		}
@@ -614,20 +576,6 @@ func escapeTmuxFilter(s string) string {
 	s = strings.ReplaceAll(s, "{", "\\{")
 	s = strings.ReplaceAll(s, "}", "\\}")
 	return s
-}
-
-// envFlags builds the -e KEY=VALUE arguments for tmux new-session,
-// new-window, and split-window commands. Keys are sorted for determinism.
-func envFlags(env map[string]string) []string {
-	if len(env) == 0 {
-		return nil
-	}
-	keys := sortedKeys(env)
-	var args []string
-	for _, k := range keys {
-		args = append(args, "-e", k+"="+env[k])
-	}
-	return args
 }
 
 // sendPaneCommands sends setup and/or cmd to a tmux pane according to autorun rules.

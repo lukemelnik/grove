@@ -53,7 +53,6 @@ Run 'grove schema' for the full .grove.yml configuration reference.`,
 		RunE: runCreate,
 	}
 
-	cmd.Flags().StringArrayP("env", "e", nil, "environment variable override (KEY=VALUE, repeatable)")
 	cmd.Flags().String("from", "", "base branch for new branches (default: origin/main)")
 	cmd.Flags().Bool("no-tmux", false, "skip tmux, just create worktree and print info")
 	cmd.Flags().Bool("all", false, "include optional panes")
@@ -73,7 +72,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	branch := args[0]
 
 	// Parse flags
-	envOverrides, _ := cmd.Flags().GetStringArray("env")
 	fromRef, _ := cmd.Flags().GetString("from")
 	noTmux, _ := cmd.Flags().GetBool("no-tmux")
 	explicitJSON, _ := cmd.Flags().GetBool("json")
@@ -119,18 +117,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Resolve environment variables
-	overrides, err := env.ParseOverrides(envOverrides)
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("parsing env overrides: %w", err))
-	}
-
-	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot, overrides)
+	resolvedEnv, err := env.Resolve(cfg, portAssignment.Ports, projectRoot)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
 	}
 
 	// Step 4: Create worktree with branch resolution
-
 	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
@@ -142,27 +134,38 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		if err := outputJSON(cmd, result, portAssignment.Ports, resolvedEnv); err != nil {
 			return outputError(cmd, err)
 		}
-	} else if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg, overrides); err != nil {
+	} else if err := outputText(cmd, result, portAssignment.Ports, resolvedEnv, cfg); err != nil {
 		return outputError(cmd, err)
 	}
 
-	// Step 6: Tmux workspace setup (default to empty config if not specified)
+	// Step 6: Symlink .env files and write .env.local with managed vars
+	if len(cfg.EnvFiles) > 0 {
+		if err := env.SymlinkEnvFiles(cfg.EnvFiles, projectRoot, result.Path); err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
+		}
+		managed := env.ManagedVars(cfg, portAssignment.Ports)
+		if len(managed) > 0 {
+			mappings := env.MapManagedToEnvFiles(cfg, managed, projectRoot)
+			if err := env.WriteEnvLocals(mappings, result.Path); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
+			}
+		}
+	}
+
+	// Step 7: Tmux workspace setup (default to empty config if not specified)
 	if !noTmux {
 		tmuxCfg := cfg.Tmux
 		if tmuxCfg == nil {
 			tmuxCfg = &config.TmuxConfig{}
 		}
 
-		// Split env: shared (.env files) via set-environment, managed (ports/overrides) via -e flags
-		managedKeys := env.ManagedKeys(cfg, overrides)
-		sharedEnv, managedEnv := env.SplitEnv(resolvedEnv, managedKeys)
+		managed := env.ManagedVars(cfg, portAssignment.Ports)
 
 		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
 		tmuxOpts := tmux.Options{
 			Branch:       branch,
 			WorktreePath: result.Path,
-			SharedEnv:    sharedEnv,
-			ManagedEnv:   managedEnv,
+			Env:          managed,
 			TmuxConfig:   tmuxCfg,
 			IncludeAll:   includeAll,
 			IncludeWith:  includeWith,
@@ -195,7 +198,7 @@ func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 	return nil
 }
 
-func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string, cfg *config.Config, overrides map[string]string) error {
+func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int, resolvedEnv map[string]string, cfg *config.Config) error {
 	w := cmd.OutOrStdout()
 
 	if result.Created {
@@ -208,7 +211,6 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 
 	if len(assignedPorts) > 0 {
 		fmt.Fprintln(w, "Ports:")
-		// Sort port names for deterministic output
 		names := make([]string, 0, len(assignedPorts))
 		for name := range assignedPorts {
 			names = append(names, name)
@@ -219,8 +221,7 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 		}
 	}
 
-	// Only show grove-managed env vars in text output (port vars + env block + overrides).
-	// The full set (including .env file pass-through) is available via --json or grove status.
+	// Only show grove-managed env vars in text output (port vars + env block).
 	managedEnv := make(map[string]string)
 	for _, svc := range cfg.Services {
 		if v, ok := resolvedEnv[svc.Env]; ok {
@@ -231,9 +232,6 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 		if v, ok := resolvedEnv[k]; ok {
 			managedEnv[k] = v
 		}
-	}
-	for k, v := range overrides {
-		managedEnv[k] = v
 	}
 
 	if len(managedEnv) > 0 {

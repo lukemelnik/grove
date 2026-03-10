@@ -3,6 +3,7 @@ package env
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"grove/internal/config"
@@ -227,7 +228,6 @@ func TestResolveTemplates_EmptyPorts(t *testing.T) {
 }
 
 func TestResolve_FullPipeline(t *testing.T) {
-	// Set up env files
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	envContent := []byte("EXISTING_VAR=from_env_file\nPORT=9999\n")
@@ -253,21 +253,14 @@ func TestResolve_FullPipeline(t *testing.T) {
 		"web": 3045,
 	}
 
-	overrides := map[string]string{
-		"OVERRIDE_VAR": "from_cli",
-	}
-
-	result, err := Resolve(cfg, ports, dir, overrides)
+	result, err := Resolve(cfg, ports, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Step 1: .env file vars should be present
 	if result["EXISTING_VAR"] != "from_env_file" {
 		t.Errorf("expected EXISTING_VAR from env file, got %q", result["EXISTING_VAR"])
 	}
-
-	// Step 2: env block vars with templates resolved
 	if result["VITE_API_URL"] != "http://localhost:4045" {
 		t.Errorf("expected VITE_API_URL with resolved port, got %q", result["VITE_API_URL"])
 	}
@@ -277,26 +270,17 @@ func TestResolve_FullPipeline(t *testing.T) {
 	if result["CUSTOM"] != "static_value" {
 		t.Errorf("expected CUSTOM=static_value, got %q", result["CUSTOM"])
 	}
-
-	// Step 3: service port vars override .env file PORT=9999
 	if result["PORT"] != "4045" {
 		t.Errorf("expected PORT=4045 (from service), got %q", result["PORT"])
 	}
 	if result["WEB_PORT"] != "3045" {
 		t.Errorf("expected WEB_PORT=3045, got %q", result["WEB_PORT"])
 	}
-
-	// Step 4: -e overrides present
-	if result["OVERRIDE_VAR"] != "from_cli" {
-		t.Errorf("expected OVERRIDE_VAR=from_cli, got %q", result["OVERRIDE_VAR"])
-	}
 }
 
-func TestResolve_OverridePrecedence(t *testing.T) {
-	// Test that resolution order is enforced: env_files < env block < services < overrides
+func TestResolve_Precedence(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
-	// .env file sets PORT=1111 and CUSTOM=from_file
 	envContent := []byte("PORT=1111\nCUSTOM=from_file\n")
 	if err := os.WriteFile(envPath, envContent, 0644); err != nil {
 		t.Fatal(err)
@@ -308,29 +292,22 @@ func TestResolve_OverridePrecedence(t *testing.T) {
 			"api": {Port: 4000, Env: "PORT"},
 		},
 		Env: map[string]string{
-			"CUSTOM": "from_env_block", // overrides .env file value
+			"CUSTOM": "from_env_block",
 		},
 	}
 
 	ports := map[string]int{"api": 4045}
 
-	overrides := map[string]string{
-		"PORT": "9999", // overrides even the service port
-	}
-
-	result, err := Resolve(cfg, ports, dir, overrides)
+	result, err := Resolve(cfg, ports, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// CUSTOM should come from env block (step 2 overrides step 1)
 	if result["CUSTOM"] != "from_env_block" {
 		t.Errorf("expected CUSTOM=from_env_block, got %q", result["CUSTOM"])
 	}
-
-	// PORT: service sets it to 4045 (step 3), but -e override sets 9999 (step 4)
-	if result["PORT"] != "9999" {
-		t.Errorf("expected PORT=9999 (from override), got %q", result["PORT"])
+	if result["PORT"] != "4045" {
+		t.Errorf("expected PORT=4045 (service wins over env file), got %q", result["PORT"])
 	}
 }
 
@@ -343,7 +320,7 @@ func TestResolve_NoEnvFiles(t *testing.T) {
 
 	ports := map[string]int{"api": 4050}
 
-	result, err := Resolve(cfg, ports, "", nil)
+	result, err := Resolve(cfg, ports, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -358,7 +335,7 @@ func TestResolve_MissingEnvFile(t *testing.T) {
 		EnvFiles: []string{".env.nonexistent"},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "/tmp", nil)
+	_, err := Resolve(cfg, map[string]int{}, "/tmp")
 	if err == nil {
 		t.Fatal("expected error for missing env file")
 	}
@@ -371,7 +348,7 @@ func TestResolve_TemplateError(t *testing.T) {
 		},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "", nil)
+	_, err := Resolve(cfg, map[string]int{}, "")
 	if err == nil {
 		t.Fatal("expected error for unknown service in template")
 	}
@@ -380,13 +357,11 @@ func TestResolve_TemplateError(t *testing.T) {
 func TestResolve_MultipleEnvFiles(t *testing.T) {
 	dir := t.TempDir()
 
-	// First env file
 	env1 := filepath.Join(dir, ".env")
 	if err := os.WriteFile(env1, []byte("KEY1=from_first\nSHARED=first\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Second env file (later in list, should override SHARED)
 	subdir := filepath.Join(dir, "apps", "api")
 	if err := os.MkdirAll(subdir, 0755); err != nil {
 		t.Fatal(err)
@@ -400,7 +375,7 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 		EnvFiles: []string{".env", "apps/api/.env"},
 	}
 
-	result, err := Resolve(cfg, map[string]int{}, dir, nil)
+	result, err := Resolve(cfg, map[string]int{}, dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -411,86 +386,14 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 	if result["KEY2"] != "from_second" {
 		t.Errorf("expected KEY2=from_second, got %q", result["KEY2"])
 	}
-	// SHARED should come from second file (last wins)
 	if result["SHARED"] != "second" {
 		t.Errorf("expected SHARED=second (last env file wins), got %q", result["SHARED"])
 	}
 }
 
-func TestParseOverrides_Valid(t *testing.T) {
-	pairs := []string{"KEY1=value1", "KEY2=value2", "KEY3=val=ue3"}
-	result, err := ParseOverrides(pairs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result["KEY1"] != "value1" {
-		t.Errorf("expected KEY1=value1, got %q", result["KEY1"])
-	}
-	if result["KEY2"] != "value2" {
-		t.Errorf("expected KEY2=value2, got %q", result["KEY2"])
-	}
-	if result["KEY3"] != "val=ue3" {
-		t.Errorf("expected KEY3=val=ue3, got %q", result["KEY3"])
-	}
-}
-
-func TestParseOverrides_Empty(t *testing.T) {
-	result, err := ParseOverrides(nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(result) != 0 {
-		t.Errorf("expected empty map, got %d entries", len(result))
-	}
-}
-
-func TestParseOverrides_NoEquals(t *testing.T) {
-	_, err := ParseOverrides([]string{"INVALID"})
-	if err == nil {
-		t.Fatal("expected error for missing =")
-	}
-}
-
-func TestParseOverrides_EmptyKey(t *testing.T) {
-	_, err := ParseOverrides([]string{"=value"})
-	if err == nil {
-		t.Fatal("expected error for empty key")
-	}
-}
-
-func TestParseOverrides_EmptyValue(t *testing.T) {
-	result, err := ParseOverrides([]string{"KEY="})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result["KEY"] != "" {
-		t.Errorf("expected empty value, got %q", result["KEY"])
-	}
-}
-
-func TestResolve_NilOverrides(t *testing.T) {
-	cfg := &config.Config{
-		Services: map[string]config.Service{
-			"api": {Port: 4000, Env: "PORT"},
-		},
-	}
-
-	ports := map[string]int{"api": 4050}
-
-	result, err := Resolve(cfg, ports, "", nil)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if result["PORT"] != "4050" {
-		t.Errorf("expected PORT=4050, got %q", result["PORT"])
-	}
-}
-
 func TestResolve_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{}
-	result, err := Resolve(cfg, map[string]int{}, "", nil)
+	result, err := Resolve(cfg, map[string]int{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -523,23 +426,217 @@ KEY5=no_comment_here
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Unquoted: inline comment stripped
 	if result["KEY1"] != "value1" {
 		t.Errorf("expected KEY1=value1, got %q", result["KEY1"])
 	}
-	// Double-quoted: # preserved inside quotes
 	if result["KEY2"] != "value2 # not a comment" {
 		t.Errorf("expected KEY2='value2 # not a comment', got %q", result["KEY2"])
 	}
-	// Single-quoted: # preserved inside quotes
 	if result["KEY3"] != "value3 # not a comment" {
 		t.Errorf("expected KEY3='value3 # not a comment', got %q", result["KEY3"])
 	}
-	// No inline comment
 	if result["KEY4"] != "value4" {
 		t.Errorf("expected KEY4=value4, got %q", result["KEY4"])
 	}
 	if result["KEY5"] != "no_comment_here" {
 		t.Errorf("expected KEY5=no_comment_here, got %q", result["KEY5"])
+	}
+}
+
+func TestManagedVars(t *testing.T) {
+	cfg := &config.Config{
+		Services: map[string]config.Service{
+			"api": {Port: 4000, Env: "PORT"},
+			"web": {Port: 3000, Env: "WEB_PORT"},
+		},
+		Env: map[string]string{
+			"VITE_API_URL": "http://localhost:{{api.port}}",
+		},
+	}
+
+	ports := map[string]int{"api": 4045, "web": 3045}
+	result := ManagedVars(cfg, ports)
+
+	if result["PORT"] != "4045" {
+		t.Errorf("expected PORT=4045, got %q", result["PORT"])
+	}
+	if result["WEB_PORT"] != "3045" {
+		t.Errorf("expected WEB_PORT=3045, got %q", result["WEB_PORT"])
+	}
+	if result["VITE_API_URL"] != "http://localhost:4045" {
+		t.Errorf("expected VITE_API_URL resolved, got %q", result["VITE_API_URL"])
+	}
+}
+
+func TestMapManagedToEnvFiles(t *testing.T) {
+	dir := t.TempDir()
+
+	apiDir := filepath.Join(dir, "apps", "api")
+	if err := os.MkdirAll(apiDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(apiDir, ".env"), []byte("PORT=4000\nDB_URL=postgres://...\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	webDir := filepath.Join(dir, "apps", "web")
+	if err := os.MkdirAll(webDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, ".env"), []byte("WEB_PORT=3000\nVITE_API_URL=http://localhost:4000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		EnvFiles: []string{"apps/api/.env", "apps/web/.env"},
+	}
+
+	managed := map[string]string{
+		"PORT":         "4045",
+		"WEB_PORT":     "3045",
+		"VITE_API_URL": "http://localhost:4045",
+		"NEW_VAR":      "not_in_any_file",
+	}
+
+	mappings := MapManagedToEnvFiles(cfg, managed, dir)
+
+	apiLocal := findMapping(mappings, "apps/api/.env.local")
+	if apiLocal == nil {
+		t.Fatal("expected apps/api/.env.local mapping")
+	}
+	if apiLocal.Vars["PORT"] != "4045" {
+		t.Errorf("expected PORT in api .env.local, got %v", apiLocal.Vars)
+	}
+
+	webLocal := findMapping(mappings, "apps/web/.env.local")
+	if webLocal == nil {
+		t.Fatal("expected apps/web/.env.local mapping")
+	}
+	if webLocal.Vars["WEB_PORT"] != "3045" {
+		t.Errorf("expected WEB_PORT in web .env.local")
+	}
+	if webLocal.Vars["VITE_API_URL"] != "http://localhost:4045" {
+		t.Errorf("expected VITE_API_URL in web .env.local")
+	}
+	// NEW_VAR should end up in the last env file's .env.local
+	if webLocal.Vars["NEW_VAR"] != "not_in_any_file" {
+		t.Errorf("expected NEW_VAR in last .env.local, got %v", webLocal.Vars)
+	}
+}
+
+func findMapping(mappings []EnvLocalMapping, relPath string) *EnvLocalMapping {
+	for i := range mappings {
+		if mappings[i].RelPath == relPath {
+			return &mappings[i]
+		}
+	}
+	return nil
+}
+
+func TestWriteEnvLocals(t *testing.T) {
+	dir := t.TempDir()
+
+	mappings := []EnvLocalMapping{
+		{
+			RelPath: "apps/api/.env.local",
+			Vars:    map[string]string{"PORT": "4045", "DEBUG": "true"},
+		},
+	}
+
+	if err := WriteEnvLocals(mappings, dir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "apps", "api", ".env.local"))
+	if err != nil {
+		t.Fatalf("failed to read written file: %v", err)
+	}
+
+	s := string(content)
+	if !strings.Contains(s, "# Generated by grove") {
+		t.Error("expected header comment")
+	}
+	if !strings.Contains(s, "PORT=4045") {
+		t.Error("expected PORT=4045")
+	}
+	if !strings.Contains(s, "DEBUG=true") {
+		t.Error("expected DEBUG=true")
+	}
+}
+
+func TestSymlinkEnvFiles(t *testing.T) {
+	mainRepo := t.TempDir()
+	worktree := t.TempDir()
+
+	apiDir := filepath.Join(mainRepo, "apps", "api")
+	if err := os.MkdirAll(apiDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	envContent := []byte("PORT=4000\n")
+	if err := os.WriteFile(filepath.Join(apiDir, ".env"), envContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	envFiles := []string{"apps/api/.env"}
+
+	if err := SymlinkEnvFiles(envFiles, mainRepo, worktree); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wtEnv := filepath.Join(worktree, "apps", "api", ".env")
+	info, err := os.Lstat(wtEnv)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("expected symlink, got regular file")
+	}
+
+	target, err := os.Readlink(wtEnv)
+	if err != nil {
+		t.Fatalf("failed to read symlink: %v", err)
+	}
+
+	expectedRel, _ := filepath.Rel(filepath.Join(worktree, "apps", "api"), filepath.Join(mainRepo, "apps", "api", ".env"))
+	if target != expectedRel {
+		t.Errorf("expected relative symlink %q, got %q", expectedRel, target)
+	}
+
+	// Reading through the symlink should work
+	data, err := os.ReadFile(wtEnv)
+	if err != nil {
+		t.Fatalf("failed to read through symlink: %v", err)
+	}
+	if string(data) != "PORT=4000\n" {
+		t.Errorf("expected PORT=4000, got %q", string(data))
+	}
+}
+
+func TestSymlinkEnvFiles_SkipsMissing(t *testing.T) {
+	mainRepo := t.TempDir()
+	worktree := t.TempDir()
+
+	envFiles := []string{"nonexistent/.env"}
+
+	if err := SymlinkEnvFiles(envFiles, mainRepo, worktree); err != nil {
+		t.Fatalf("expected no error for missing env file, got: %v", err)
+	}
+}
+
+func TestSymlinkEnvFiles_Idempotent(t *testing.T) {
+	mainRepo := t.TempDir()
+	worktree := t.TempDir()
+
+	if err := os.WriteFile(filepath.Join(mainRepo, ".env"), []byte("KEY=val\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	envFiles := []string{".env"}
+
+	if err := SymlinkEnvFiles(envFiles, mainRepo, worktree); err != nil {
+		t.Fatalf("first call failed: %v", err)
+	}
+	if err := SymlinkEnvFiles(envFiles, mainRepo, worktree); err != nil {
+		t.Fatalf("second call failed: %v", err)
 	}
 }

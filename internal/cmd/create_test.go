@@ -193,54 +193,6 @@ env:
 	}
 }
 
-func TestCreateCmd_EnvOverrides(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test")
-	}
-
-	worktreeDir := t.TempDir()
-	groveYML := `worktree_dir: ` + worktreeDir + `
-services:
-  api:
-    port: 4000
-    env: PORT
-`
-	repoDir := setupCreateTestRepo(t, groveYML)
-
-	gitCmd := exec.Command("git", "branch", "feat/env-override")
-	gitCmd.Dir = repoDir
-	if out, err := gitCmd.CombinedOutput(); err != nil {
-		t.Fatalf("git branch failed: %s: %v", string(out), err)
-	}
-
-	origGetWd := getWorkingDir
-	getWorkingDir = func() (string, error) { return repoDir, nil }
-	defer func() { getWorkingDir = origGetWd }()
-
-	rootCmd := NewRootCmd()
-	var buf bytes.Buffer
-	rootCmd.SetOut(&buf)
-	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"create", "feat/env-override", "--json", "--no-tmux", "-e", "CUSTOM_VAR=hello", "-e", "ANOTHER=world"})
-
-	err := rootCmd.Execute()
-	if err != nil {
-		t.Fatalf("create command failed: %v\nOutput: %s", err, buf.String())
-	}
-
-	var result createOutput
-	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
-		t.Fatalf("failed to parse JSON: %v\nRaw: %s", err, buf.String())
-	}
-
-	if v, ok := result.Env["CUSTOM_VAR"]; !ok || v != "hello" {
-		t.Errorf("expected CUSTOM_VAR=hello, got %q", v)
-	}
-	if v, ok := result.Env["ANOTHER"]; !ok || v != "world" {
-		t.Errorf("expected ANOTHER=world, got %q", v)
-	}
-}
-
 func TestCreateCmd_NewBranchFromRef(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

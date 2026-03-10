@@ -285,7 +285,7 @@ func TestCreate_SessionMode(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/path/to/worktree",
-		ManagedEnv: map[string]string{
+		Env: map[string]string{
 			"PORT":     "4045",
 			"WEB_PORT": "3045",
 		},
@@ -306,24 +306,13 @@ func TestCreate_SessionMode(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Verify session creation with -e flags
+	// Verify session creation (no -e flags on new-session)
 	idx := runner.findCommand("new-session", "-d", "-s", "feat-auth")
 	if idx < 0 {
 		t.Errorf("expected new-session command, got:\n%s", runner.commandString())
 	}
-	// Check -e flags on new-session
-	newSessionCmd := runner.commands[idx]
-	envCount := 0
-	for _, arg := range newSessionCmd {
-		if arg == "-e" {
-			envCount++
-		}
-	}
-	if envCount != 2 {
-		t.Errorf("expected 2 -e flags on new-session, got %d:\n%s", envCount, runner.commandString())
-	}
 
-	// Session mode also uses set-environment for manually created panes/windows
+	// Session mode uses set-environment for managed env vars
 	envCmds := runner.findAllCommands("set-environment")
 	if len(envCmds) != 2 {
 		t.Errorf("expected 2 set-environment commands, got %d:\n%s", len(envCmds), runner.commandString())
@@ -341,21 +330,10 @@ func TestCreate_SessionMode(t *testing.T) {
 		t.Error("env injection should happen before pane creation")
 	}
 
-	// Verify split-window commands have -e flags too
+	// Verify split-window commands (no -e flags)
 	splits := runner.findAllCommands("split-window")
 	if len(splits) != 2 {
 		t.Errorf("expected 2 split-window commands, got %d:\n%s", len(splits), runner.commandString())
-	}
-	for _, split := range splits {
-		splitEnvCount := 0
-		for _, arg := range split {
-			if arg == "-e" {
-				splitEnvCount++
-			}
-		}
-		if splitEnvCount != 2 {
-			t.Errorf("expected 2 -e flags on split-window, got %d: %v", splitEnvCount, split)
-		}
 	}
 
 	// Verify pane commands
@@ -381,7 +359,7 @@ func TestCreate_WindowMode(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/path/to/worktree",
-		ManagedEnv: map[string]string{
+		Env: map[string]string{
 			"PORT": "4045",
 		},
 		TmuxConfig: &config.TmuxConfig{
@@ -415,18 +393,6 @@ func TestCreate_WindowMode(t *testing.T) {
 	if len(envCmds) != 0 {
 		t.Errorf("window mode should not use set-environment (env leak), got %d:\n%s", len(envCmds), runner.commandString())
 	}
-
-	// Instead, new-window should have -e flags
-	newWindowCmd := runner.commands[runner.findCommand("new-window")]
-	foundEnvFlag := false
-	for i, arg := range newWindowCmd {
-		if arg == "-e" && i+1 < len(newWindowCmd) && newWindowCmd[i+1] == "PORT=4045" {
-			foundEnvFlag = true
-		}
-	}
-	if !foundEnvFlag {
-		t.Errorf("expected new-window to have -e PORT=4045, got:\n%s", runner.commandString())
-	}
 }
 
 func TestCreate_WindowModeFallsBackToSession(t *testing.T) {
@@ -439,7 +405,7 @@ func TestCreate_WindowModeFallsBackToSession(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/path/to/worktree",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "window",
 			Panes: []config.Pane{
@@ -468,7 +434,7 @@ func TestCreate_Tier1_Preset(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "tiled",
@@ -519,7 +485,7 @@ func TestCreate_Tier2_PresetWithSize(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:     "session",
 			Layout:   "main-vertical",
@@ -558,7 +524,7 @@ func TestCreate_Tier2_MainHorizontal(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:     "session",
 			Layout:   "main-horizontal",
@@ -590,7 +556,7 @@ func TestCreate_Tier3_ExplicitSplits(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{
@@ -640,7 +606,7 @@ func TestCreate_Tier4_RawLayout(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: rawLayout,
@@ -684,7 +650,7 @@ func TestCreate_OptionalPanes_Default(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -723,7 +689,7 @@ func TestCreate_OptionalPanes_All(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -756,7 +722,7 @@ func TestCreate_OptionalPanes_WithName(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -802,7 +768,7 @@ func TestCreate_EnvInjectionOrder(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/work",
-		ManagedEnv:   env,
+		Env:   env,
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -853,19 +819,6 @@ func TestCreate_EnvInjectionOrder(t *testing.T) {
 	if lastEnvIdx >= firstPaneIdx && firstPaneIdx >= 0 {
 		t.Error("all env injection should happen before pane creation")
 	}
-
-	// Also verify -e flags on new-session and split-window
-	newSessionIdx := runner.findCommand("new-session")
-	newSessionCmd := runner.commands[newSessionIdx]
-	eCount := 0
-	for _, arg := range newSessionCmd {
-		if arg == "-e" {
-			eCount++
-		}
-	}
-	if eCount != 3 {
-		t.Errorf("expected 3 -e flags on new-session, got %d", eCount)
-	}
 }
 
 func TestCreate_AttachSession(t *testing.T) {
@@ -878,7 +831,7 @@ func TestCreate_AttachSession(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -909,7 +862,7 @@ func TestCreate_AttachSwitchClient(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -937,7 +890,7 @@ func TestCreate_NoAttach(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -967,7 +920,7 @@ func TestCreate_DefaultLayout(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			// No layout specified — should default to main-vertical
@@ -997,7 +950,7 @@ func TestCreate_NoPanes(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{"PORT": "4000"},
+		Env:   map[string]string{"PORT": "4000"},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:  "session",
 			Panes: []config.Pane{},
@@ -1010,21 +963,10 @@ func TestCreate_NoPanes(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	// Should still create session with -e flag and use set-environment
+	// Should still create session and use set-environment
 	sessionIdx := runner.findCommand("new-session")
 	if sessionIdx < 0 {
 		t.Error("should still create session")
-	}
-	// -e flag on new-session
-	sessionCmd := runner.commands[sessionIdx]
-	foundE := false
-	for i, arg := range sessionCmd {
-		if arg == "-e" && i+1 < len(sessionCmd) && sessionCmd[i+1] == "PORT=4000" {
-			foundE = true
-		}
-	}
-	if !foundE {
-		t.Errorf("expected -e PORT=4000 on new-session, got: %v", sessionCmd)
 	}
 	// set-environment for session mode
 	envCmds := runner.findAllCommands("set-environment")
@@ -1044,7 +986,7 @@ func TestCreate_EmptyCommand(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "even-horizontal",
@@ -1079,7 +1021,7 @@ func TestCreate_SinglePane(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode:   "session",
 			Layout: "main-vertical",
@@ -1148,7 +1090,7 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/path/to/worktree",
-		ManagedEnv: map[string]string{
+		Env: map[string]string{
 			"PORT":         "4045",
 			"WEB_PORT":     "3045",
 			"VITE_API_URL": "http://localhost:4045",
@@ -1171,28 +1113,28 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 	}
 
 	// Verify the command order:
-	// 1. new-session with -e flags
-	// 2. set-environment (session mode, for manually created panes)
+	// 1. new-session (no -e flags)
+	// 2. set-environment (session mode, for managed env vars)
 	// 3. send-keys for first pane
-	// 4. split-window + send-keys for each additional pane
+	// 4. split-window + send-keys for each additional pane (no -e flags)
 	// 5. select-layout
 	// 6. select-pane
 	expected := []struct {
 		prefix []string
 	}{
-		// 1. Create session with -e flags (sorted: PORT, VITE_API_URL, WEB_PORT)
-		{[]string{"new-session", "-d", "-s", "feat-auth", "-e", "PORT=4045", "-e", "VITE_API_URL=http://localhost:4045", "-e", "WEB_PORT=3045", "-c", "/path/to/worktree"}},
+		// 1. Create session (no -e flags)
+		{[]string{"new-session", "-d", "-s", "feat-auth", "-c", "/path/to/worktree"}},
 		// 2. Set environment (sorted alphabetically)
 		{[]string{"set-environment", "-t", "feat-auth", "PORT", "4045"}},
 		{[]string{"set-environment", "-t", "feat-auth", "VITE_API_URL", "http://localhost:4045"}},
 		{[]string{"set-environment", "-t", "feat-auth", "WEB_PORT", "3045"}},
 		// 3. First pane command
 		{[]string{"send-keys", "-t", "feat-auth", "nvim", "Enter"}},
-		// 4. Second pane with -e flags
-		{[]string{"split-window", "-h", "-t", "feat-auth", "-e", "PORT=4045", "-e", "VITE_API_URL=http://localhost:4045", "-e", "WEB_PORT=3045", "-c", "/path/to/worktree"}},
+		// 4. Second pane (no -e flags)
+		{[]string{"split-window", "-h", "-t", "feat-auth", "-c", "/path/to/worktree"}},
 		{[]string{"send-keys", "-t", "feat-auth", "claude --model sonnet", "Enter"}},
-		// 5. Third pane with -e flags
-		{[]string{"split-window", "-h", "-t", "feat-auth", "-e", "PORT=4045", "-e", "VITE_API_URL=http://localhost:4045", "-e", "WEB_PORT=3045", "-c", "/path/to/worktree"}},
+		// 5. Third pane (no -e flags)
+		{[]string{"split-window", "-h", "-t", "feat-auth", "-c", "/path/to/worktree"}},
 		{[]string{"send-keys", "-t", "feat-auth", "pnpm dev", "Enter"}},
 		// 6. Apply layout
 		{[]string{"select-layout", "-t", "feat-auth", "main-vertical"}},
@@ -1224,7 +1166,7 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 }
 
 func TestCreate_WindowMode_EnvOnSplitWindow(t *testing.T) {
-	// Verify that window mode uses -e flags on split-window and NOT set-environment
+	// Verify that window mode does NOT use -e flags or set-environment
 	t.Setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
 
 	runner := newMockRunner()
@@ -1233,7 +1175,7 @@ func TestCreate_WindowMode_EnvOnSplitWindow(t *testing.T) {
 	opts := Options{
 		Branch:       "feat/auth",
 		WorktreePath: "/work",
-		ManagedEnv: map[string]string{
+		Env: map[string]string{
 			"PORT":     "4045",
 			"WEB_PORT": "3045",
 		},
@@ -1260,73 +1202,29 @@ func TestCreate_WindowMode_EnvOnSplitWindow(t *testing.T) {
 		t.Errorf("window mode should not use set-environment, got %d:\n%s", len(envCmds), runner.commandString())
 	}
 
-	// new-window should have -e flags
+	// new-window should NOT have -e flags (env no longer injected per-pane)
 	newWindowIdx := runner.findCommand("new-window")
 	newWindowCmd := runner.commands[newWindowIdx]
-	eCount := 0
 	for _, arg := range newWindowCmd {
 		if arg == "-e" {
-			eCount++
+			t.Errorf("new-window should not have -e flags: %v", newWindowCmd)
+			break
 		}
 	}
-	if eCount != 2 {
-		t.Errorf("expected 2 -e flags on new-window, got %d: %v", eCount, newWindowCmd)
-	}
 
-	// Every split-window should have -e flags
+	// split-window should NOT have -e flags
 	splits := runner.findAllCommands("split-window")
 	if len(splits) != 2 {
 		t.Fatalf("expected 2 split-window, got %d", len(splits))
 	}
 	for _, split := range splits {
-		splitE := 0
 		for _, arg := range split {
 			if arg == "-e" {
-				splitE++
+				t.Errorf("split-window should not have -e flags: %v", split)
+				break
 			}
-		}
-		if splitE != 2 {
-			t.Errorf("expected 2 -e flags on split-window, got %d: %v", splitE, split)
 		}
 	}
-}
-
-func TestEnvFlags(t *testing.T) {
-	t.Run("empty env", func(t *testing.T) {
-		flags := envFlags(nil)
-		if flags != nil {
-			t.Errorf("expected nil, got %v", flags)
-		}
-	})
-
-	t.Run("single env var", func(t *testing.T) {
-		flags := envFlags(map[string]string{"PORT": "4000"})
-		expected := []string{"-e", "PORT=4000"}
-		if len(flags) != len(expected) {
-			t.Fatalf("expected %v, got %v", expected, flags)
-		}
-		for i, f := range flags {
-			if f != expected[i] {
-				t.Errorf("flags[%d] = %q, want %q", i, f, expected[i])
-			}
-		}
-	})
-
-	t.Run("sorted keys", func(t *testing.T) {
-		flags := envFlags(map[string]string{
-			"ZEBRA": "z",
-			"APPLE": "a",
-		})
-		expected := []string{"-e", "APPLE=a", "-e", "ZEBRA=z"}
-		if len(flags) != len(expected) {
-			t.Fatalf("expected %v, got %v", expected, flags)
-		}
-		for i, f := range flags {
-			if f != expected[i] {
-				t.Errorf("flags[%d] = %q, want %q", i, f, expected[i])
-			}
-		}
-	})
 }
 
 func TestParseSizePercent(t *testing.T) {
@@ -1359,7 +1257,7 @@ func TestCreate_Tier3_SizeOnSplit(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{
@@ -1418,7 +1316,7 @@ func TestCreate_Tier3_SizeOnNonFirstPane(t *testing.T) {
 	opts := Options{
 		Branch:       "test-branch",
 		WorktreePath: "/work",
-		ManagedEnv:   map[string]string{},
+		Env:   map[string]string{},
 		TmuxConfig: &config.TmuxConfig{
 			Mode: "session",
 			Panes: []config.Pane{

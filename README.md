@@ -150,7 +150,6 @@ grove create feat/auth --from develop       # Create from specific base
 grove create feat/auth --no-tmux            # Skip tmux, just create worktree
 grove create feat/auth --all                # Include optional panes
 grove create feat/auth --with dev --with test  # Include specific optional panes
-grove create feat/auth -e DEBUG=true        # Override env vars
 ```
 
 **Branch resolution:**
@@ -166,7 +165,6 @@ grove create feat/auth -e DEBUG=true        # Override env vars
 | `--no-tmux` | Skip tmux workspace creation |
 | `--all` | Include all optional panes |
 | `--with <name>` | Include specific optional pane by name (repeatable) |
-| `-e, --env KEY=VALUE` | Environment variable override (repeatable) |
 | `--json` | Output as JSON |
 | `--attach` | Auto-attach to tmux (default: true) |
 
@@ -276,24 +274,35 @@ All services share the same offset, so port relationships are preserved. Browser
 
 ### Environment Variables
 
-Environment variables are resolved in layers, with later layers overriding earlier ones:
+In worktrees, `.env` files are **symlinked** from the main repo so secrets stay in one place. Grove writes `.env.local` files next to each symlink with branch-specific port assignments and template-resolved values. Most frameworks (Vite, Next.js, CRA, Rails) load `.env.local` and override `.env` automatically.
 
-1. **`.env` files** — all variables from files listed in `env_files`
-2. **`env` block** — static values and `{{service.port}}` templates
-3. **Service ports** — each service's `env` var is set to its assigned port
-4. **`-e` flags** — command-line overrides (highest priority)
+```
+main repo                          worktree (feat/auth)
+├── apps/api/.env (secrets)        ├── apps/api/.env → symlink to main repo
+│                                  ├── apps/api/.env.local (PORT=4045)
+├── apps/web/.env (secrets)        ├── apps/web/.env → symlink to main repo
+│                                  ├── apps/web/.env.local (WEB_PORT=3045, VITE_API_URL=...)
+```
+
+**Resolution order** (for what goes into `.env.local`):
+
+1. **`env` block** — static values and `{{service.port}}` templates
+2. **Service ports** — each service's `env` var is set to its assigned port
+
+In session mode, grove also sets managed vars via `tmux set-environment` as a fallback for tools that read env vars directly instead of `.env` files.
 
 ```yaml
 env_files:
-  - .env                          # DATABASE_URL, API_KEY, etc.
+  - apps/api/.env                 # Symlinked into worktree
+  - apps/web/.env                 # Symlinked into worktree
 
 services:
   api:
     port: 4000
-    env: PORT                     # PORT=4045 (overrides .env)
+    env: PORT                     # Written to apps/api/.env.local as PORT=4045
 
 env:
-  VITE_API_URL: "http://localhost:{{api.port}}"   # Resolves to http://localhost:4045
+  VITE_API_URL: "http://localhost:{{api.port}}"   # Written to .env.local as resolved value
 ```
 
 ## Tmux Layouts
@@ -411,9 +420,9 @@ tmux:
   mode: window     # Each worktree gets a window in your current session (default)
 ```
 
-**Window mode** (default) keeps all worktrees as windows in one tmux session. Environment variables are injected per-pane via tmux's `-e` flag, so they don't leak between windows.
+**Window mode** (default) keeps all worktrees as windows in one tmux session. Each worktree gets its own `.env.local` files with branch-specific ports, so environment doesn't leak between windows.
 
-**Session mode** gives each worktree a fully isolated tmux session with its own environment.
+**Session mode** gives each worktree a fully isolated tmux session. Managed env vars are also injected via `tmux set-environment` as a fallback for tools that read env vars directly.
 
 ## Agent / CI Usage
 
@@ -515,7 +524,7 @@ tmux:
 ## Requirements
 
 - Git
-- tmux 3.2+ (for workspace features — per-pane env injection via `-e`)
+- tmux 3.2+ (for workspace features)
 - Go 1.21+ (to build from source)
 - `gh` CLI (optional — PR safety checks on `grove delete`)
 

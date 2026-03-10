@@ -77,7 +77,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 4: Resolve environment variables
-	resolvedEnv, err := env.Resolve(cfg, assignedPorts, projectRoot, nil)
+	resolvedEnv, err := env.Resolve(cfg, assignedPorts, projectRoot)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("resolving environment: %w", err))
 	}
