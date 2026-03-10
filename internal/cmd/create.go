@@ -103,10 +103,14 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, err)
 	}
 
-	// Step 2: Hash branch -> assign ports
+	// Step 2: Detect default branch and assign ports
+	git := worktree.NewGitRunner(projectRoot)
+	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+	defaultBranch := wtMgr.DefaultBranch()
+
 	var portAssignment *ports.Assignment
 	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset)
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, defaultBranch)
 		if err != nil {
 			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
 		}
@@ -126,8 +130,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 4: Create worktree with branch resolution
-	git := worktree.NewGitRunner(projectRoot)
-	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
 
 	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {

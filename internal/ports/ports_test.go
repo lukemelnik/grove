@@ -83,7 +83,7 @@ func TestAssign_Basic(t *testing.T) {
 		"web": {Port: 3000, Env: "WEB_PORT"},
 	}
 
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -110,12 +110,12 @@ func TestAssign_Deterministic(t *testing.T) {
 		"api": {Port: 4000, Env: "PORT"},
 	}
 
-	result1, err := Assign(services, "feat/auth", DefaultMaxOffset)
+	result1, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	result2, err := Assign(services, "feat/auth", DefaultMaxOffset)
+	result2, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestAssign_BlockedPortSkipped(t *testing.T) {
 	}
 
 	// Run assignment — the important thing is it doesn't return a blocked port
-	result, err := Assign(services, "any-branch", DefaultMaxOffset)
+	result, err := Assign(services, "any-branch", DefaultMaxOffset, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAssign_PortOverflow(t *testing.T) {
 		"api": {Port: 65000, Env: "PORT"},
 	}
 
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
 	if err != nil {
 		// If the hash-based offset pushes us over 65535 for all attempts, error is fine
 		return
@@ -165,7 +165,7 @@ func TestAssign_PortOverflow(t *testing.T) {
 func TestAssign_EmptyServices(t *testing.T) {
 	services := map[string]config.Service{}
 
-	result, err := Assign(services, "feat/auth", DefaultMaxOffset)
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestAssign_DefaultMaxOffset(t *testing.T) {
 	}
 
 	// Pass 0 for maxOffset to use default
-	result, err := Assign(services, "feat/auth", 0)
+	result, err := Assign(services, "feat/auth", 0, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -202,7 +202,7 @@ func TestAssign_ConsistentAcrossCommands(t *testing.T) {
 	results := make([]*Assignment, 5)
 	for i := range results {
 		var err error
-		results[i], err = Assign(services, "feat/consistent", DefaultMaxOffset)
+		results[i], err = Assign(services, "feat/consistent", DefaultMaxOffset, "")
 		if err != nil {
 			t.Fatalf("attempt %d: unexpected error: %v", i, err)
 		}
@@ -215,5 +215,83 @@ func TestAssign_ConsistentAcrossCommands(t *testing.T) {
 		if results[i].Ports["web"] != results[0].Ports["web"] {
 			t.Errorf("attempt %d: web port %d != %d", i, results[i].Ports["web"], results[0].Ports["web"])
 		}
+	}
+}
+
+func TestAssign_DefaultBranchUsesBasePorts(t *testing.T) {
+	services := map[string]config.Service{
+		"api": {Port: 4000, Env: "PORT"},
+		"web": {Port: 3000, Env: "WEB_PORT"},
+	}
+
+	result, err := Assign(services, "main", DefaultMaxOffset, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Offset != 0 {
+		t.Errorf("expected offset 0 for default branch, got %d", result.Offset)
+	}
+
+	if result.Ports["api"] != 4000 {
+		t.Errorf("expected api port 4000, got %d", result.Ports["api"])
+	}
+
+	if result.Ports["web"] != 3000 {
+		t.Errorf("expected web port 3000, got %d", result.Ports["web"])
+	}
+}
+
+func TestAssign_DefaultBranchMaster(t *testing.T) {
+	services := map[string]config.Service{
+		"api": {Port: 4000, Env: "PORT"},
+	}
+
+	result, err := Assign(services, "master", DefaultMaxOffset, "master")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Offset != 0 {
+		t.Errorf("expected offset 0 for default branch, got %d", result.Offset)
+	}
+
+	if result.Ports["api"] != 4000 {
+		t.Errorf("expected api port 4000, got %d", result.Ports["api"])
+	}
+}
+
+func TestAssign_NonDefaultBranchStillGetsOffset(t *testing.T) {
+	services := map[string]config.Service{
+		"api": {Port: 4000, Env: "PORT"},
+	}
+
+	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Offset == 0 {
+		t.Error("expected non-zero offset for non-default branch")
+	}
+
+	if result.Ports["api"] == 4000 {
+		t.Error("expected non-default branch to NOT use base port")
+	}
+}
+
+func TestAssign_EmptyDefaultBranchFallsBackToHash(t *testing.T) {
+	services := map[string]config.Service{
+		"api": {Port: 4000, Env: "PORT"},
+	}
+
+	// When defaultBranch is empty, "main" should get a hash-based offset (not 0)
+	result, err := Assign(services, "main", DefaultMaxOffset, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if result.Offset == 0 {
+		t.Error("expected hash-based offset when defaultBranch is empty, got 0")
 	}
 }

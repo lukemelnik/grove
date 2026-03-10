@@ -63,6 +63,7 @@ func runList(cmd *cobra.Command, args []string) error {
 
 	// Step 3: Compute ports for each worktree and build entries
 	// Filter out bare repos and the main worktree (same as project root)
+	defaultBranch := wtMgr.DefaultBranch()
 	var entries []listEntry
 	for _, wt := range worktrees {
 		if wt.IsBare || wt.Branch == "" {
@@ -76,7 +77,7 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		if len(cfg.Services) > 0 {
-			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset)
+			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset, defaultBranch)
 			if err == nil {
 				entry.Ports = assignment.Ports
 			}

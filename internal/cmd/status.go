@@ -64,9 +64,10 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Compute ports for this branch
+	defaultBranch := wtMgr.DefaultBranch()
 	var assignedPorts map[string]int
 	if len(cfg.Services) > 0 {
-		assignment, err := ports.Assign(cfg.Services, wtInfo.Branch, ports.DefaultMaxOffset)
+		assignment, err := ports.Assign(cfg.Services, wtInfo.Branch, ports.DefaultMaxOffset, defaultBranch)
 		if err != nil {
 			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
 		}

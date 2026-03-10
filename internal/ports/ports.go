@@ -18,83 +18,6 @@ const DefaultMaxOffset = 3000
 // when a computed port is unavailable or blocked.
 const MaxCollisionAttempts = 100
 
-// blockedPorts contains browser-restricted ports that should never be assigned.
-// See https://fetch.spec.whatwg.org/#bad-port (Chromium/Firefox blocked ports).
-var blockedPorts = map[int]bool{
-	1:     true,
-	7:     true,
-	9:     true,
-	11:    true,
-	13:    true,
-	15:    true,
-	17:    true,
-	19:    true,
-	20:    true,
-	21:    true,
-	22:    true,
-	23:    true,
-	25:    true,
-	37:    true,
-	42:    true,
-	43:    true,
-	53:    true,
-	77:    true,
-	79:    true,
-	87:    true,
-	95:    true,
-	101:   true,
-	102:   true,
-	103:   true,
-	104:   true,
-	109:   true,
-	110:   true,
-	111:   true,
-	113:   true,
-	115:   true,
-	117:   true,
-	119:   true,
-	123:   true,
-	135:   true,
-	139:   true,
-	143:   true,
-	179:   true,
-	389:   true,
-	427:   true,
-	465:   true,
-	512:   true,
-	513:   true,
-	514:   true,
-	515:   true,
-	526:   true,
-	530:   true,
-	531:   true,
-	532:   true,
-	540:   true,
-	548:   true,
-	556:   true,
-	563:   true,
-	587:   true,
-	601:   true,
-	636:   true,
-	993:   true,
-	995:   true,
-	2049:  true,
-	3659:  true,
-	4045:  true,
-	4190:  true,
-	5060:  true,
-	5061:  true,
-	6000:  true,
-	6566:  true,
-	6665:  true,
-	6666:  true,
-	6667:  true,
-	6668:  true,
-	6669:  true,
-	6697:  true,
-	10080: true,
-}
-
 // HashOffset computes a deterministic offset from a branch name.
 // offset = md5(branchName) mod maxOffset
 func HashOffset(branchName string, maxOffset int) int {
@@ -106,7 +29,7 @@ func HashOffset(branchName string, maxOffset int) int {
 
 // IsPortBlocked returns true if the port is in the browser-restricted list.
 func IsPortBlocked(port int) bool {
-	return blockedPorts[port]
+	return config.IsPortBlocked(port)
 }
 
 // Assignment holds the result of port assignment for all services.
@@ -123,14 +46,22 @@ type Assignment struct {
 // base port. If any resulting port is blocked or exceeds 65535, the offset is incremented
 // and all ports are recomputed, up to MaxCollisionAttempts times.
 //
+// The default branch (e.g. "main") uses offset 0, so its services run on the base ports
+// defined in the config. All other branches get a hash-based offset.
+//
 // Port assignment is purely deterministic — the same branch name always produces the
 // same ports. No runtime availability checking is performed.
-func Assign(services map[string]config.Service, branchName string, maxOffset int) (*Assignment, error) {
+func Assign(services map[string]config.Service, branchName string, maxOffset int, defaultBranch string) (*Assignment, error) {
 	if maxOffset <= 0 {
 		maxOffset = DefaultMaxOffset
 	}
 
-	baseOffset := HashOffset(branchName, maxOffset)
+	var baseOffset int
+	if defaultBranch != "" && branchName == defaultBranch {
+		baseOffset = 0
+	} else {
+		baseOffset = HashOffset(branchName, maxOffset)
+	}
 
 	// Sort service names for deterministic iteration order
 	names := make([]string, 0, len(services))

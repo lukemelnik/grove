@@ -91,9 +91,10 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	// Worktree exists but no tmux session/window — create one
 
 	// Resolve ports and env for this branch
+	defaultBranch := wtMgr.DefaultBranch()
 	var portAssignment *ports.Assignment
 	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset)
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, defaultBranch)
 		if err != nil {
 			return fmt.Errorf("assigning ports: %w", err)
 		}
