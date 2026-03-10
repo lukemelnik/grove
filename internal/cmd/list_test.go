@@ -169,8 +169,8 @@ services:
 			if _, ok := e.Ports["api"]; !ok {
 				t.Error("expected api port in entry")
 			}
-			if e.Path == "" {
-				t.Error("expected non-empty path")
+			if e.Worktree == "" {
+				t.Error("expected non-empty worktree path")
 			}
 		}
 	}

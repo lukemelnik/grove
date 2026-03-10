@@ -14,9 +14,9 @@ import (
 
 // listEntry is a single worktree entry for list output.
 type listEntry struct {
-	Branch string         `json:"branch"`
-	Path   string         `json:"path"`
-	Ports  map[string]int `json:"ports"`
+	Branch   string         `json:"branch"`
+	Worktree string         `json:"worktree"`
+	Ports    map[string]int `json:"ports"`
 }
 
 func newListCmd() *cobra.Command {
@@ -70,9 +70,9 @@ func runList(cmd *cobra.Command, args []string) error {
 		}
 
 		entry := listEntry{
-			Branch: wt.Branch,
-			Path:   wt.Path,
-			Ports:  map[string]int{},
+			Branch:   wt.Branch,
+			Worktree: wt.Path,
+			Ports:    map[string]int{},
 		}
 
 		if len(cfg.Services) > 0 {
@@ -112,7 +112,7 @@ func runList(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(w)
 		}
 		fmt.Fprintf(w, "Branch:   %s\n", entry.Branch)
-		fmt.Fprintf(w, "Worktree: %s\n", entry.Path)
+		fmt.Fprintf(w, "Worktree: %s\n", entry.Worktree)
 		if len(entry.Ports) > 0 {
 			fmt.Fprintln(w, "Ports:")
 			names := make([]string, 0, len(entry.Ports))
