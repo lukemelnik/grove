@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 func TestInitCmd_FullInteractive(t *testing.T) {

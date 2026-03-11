@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/tmux"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/worktree"
 )
 
 // setupCreateTestRepo creates a temporary git repo with an initial commit,

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/tmux"
 )
 
 func TestDeleteCmd_Basic(t *testing.T) {

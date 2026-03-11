@@ -1,4 +1,4 @@
-module grove
+module github.com/lukemelnik/grove
 
 go 1.25.0
 

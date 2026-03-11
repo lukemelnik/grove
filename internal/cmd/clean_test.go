@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/tmux"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/worktree"
 )
 
 // mockTerminal overrides isTerminal to simulate a TTY for text-mode tests.

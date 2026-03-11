@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"sort"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 // DefaultMaxOffset is the default modulus for the port offset hash.

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 func TestParseEnvContent_Basic(t *testing.T) {

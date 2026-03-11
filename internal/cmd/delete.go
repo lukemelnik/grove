@@ -6,9 +6,9 @@ import (
 	"os/exec"
 	"strings"
 
-	"grove/internal/config"
-	"grove/internal/tmux"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )

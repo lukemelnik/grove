@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 // mockRunner records all tmux commands for verification.

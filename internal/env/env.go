@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 // templatePattern matches {{service.port}} references in env values.

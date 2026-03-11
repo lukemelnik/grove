@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	"grove/internal/config"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/worktree"
 )
 
 // Runner executes tmux commands. This interface exists for testability.

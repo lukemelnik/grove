@@ -3,7 +3,7 @@ package ports
 import (
 	"testing"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 )
 
 func TestHashOffset_Deterministic(t *testing.T) {

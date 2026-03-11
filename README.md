@@ -3,7 +3,7 @@
 ![Grove Banner](assets/grove-banner.png)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](https://opensource.org/licenses/MIT)
-[![Go](https://img.shields.io/badge/Go-1.21+-00ADD8?logo=go&logoColor=white&style=flat-square)](https://go.dev/)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white&style=flat-square)](https://go.dev/)
 [![tmux](https://img.shields.io/badge/tmux-3.2+-1BB91F?style=flat-square)](https://github.com/tmux/tmux)
 
 For tmux users who want the worktree convenience of GUI tools like T3 Code and Codex — automatic port assignments for parallel dev servers, isolated environments, and full tmux workspaces, all from one command.
@@ -22,15 +22,19 @@ grove create feat/auth
 ## Install
 
 ```bash
-# Build and install to ~/.local/bin
-git clone https://github.com/lukeroes/grove.git
+# One-line install for Go users
+go install github.com/lukemelnik/grove/cmd/grove@latest
+
+# Or build locally
+git clone https://github.com/lukemelnik/grove.git
 cd grove
 make install
-
-# Or manually
-go build -o grove ./cmd/grove
-ln -sf "$(pwd)/grove" ~/.local/bin/grove
 ```
+
+Prebuilt archives are also published on each GitHub release:
+<https://github.com/lukemelnik/grove/releases/latest>
+
+`go install` writes `grove` to `$GOBIN` or `$GOPATH/bin`, so make sure that directory is on your `PATH`.
 
 ### Shell Completions
 
@@ -528,11 +532,42 @@ Grove uses an **explicit-invocation** model — nothing happens until you run `g
 
 **Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time.
 
+## Releasing
+
+Grove uses SemVer tags as the release source of truth:
+
+- `v0.4.1` for fixes and security patches
+- `v0.5.0` for backward-compatible features
+- `v1.0.0` for breaking changes
+- `v0.6.0-rc.1` for prereleases
+
+Create a release with the helper script:
+
+```bash
+./scripts/release.sh minor --push
+
+# Or via make
+make release-minor PUSH=1
+```
+
+The helper script requires a clean working tree, finds the latest stable `v*` tag, computes the next version, and creates an annotated git tag. If there are no prior tags, it starts from `0.0.0`, so `minor` produces the recommended first public release: `v0.1.0`.
+
+If you prefer, you can still tag manually:
+
+```bash
+git tag -a v0.4.1 -m "v0.4.1"
+git push origin v0.4.1
+```
+
+Any pushed `v*` tag runs the release workflow, executes `go test ./...`, and publishes GitHub release assets with GoReleaser. Local `make build` also embeds a version string automatically from the nearest git tag, or you can override it with `make build VERSION=0.4.1`.
+
+Homebrew is intentionally not part of the first release cut. A tap is convenient for macOS users, but it adds a second repository, publishing credentials, and ongoing formula maintenance. `go install` plus GitHub Releases stays cross-platform and is the lowest-complexity path until Grove has enough release volume to justify the extra packaging surface.
+
 ## Requirements
 
 - Git
 - tmux 3.2+ (for workspace features)
-- Go 1.21+ (to build from source)
+- Go 1.25+ (for source builds or `go install`)
 - `gh` CLI (optional — PR safety checks on `grove delete`)
 
 ## License

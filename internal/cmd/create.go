@@ -6,11 +6,11 @@ import (
 	"os"
 	"sort"
 
-	"grove/internal/config"
-	"grove/internal/env"
-	"grove/internal/ports"
-	"grove/internal/tmux"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/env"
+	"github.com/lukemelnik/grove/internal/ports"
+	"github.com/lukemelnik/grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )

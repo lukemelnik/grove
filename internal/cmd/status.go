@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"grove/internal/config"
-	"grove/internal/ports"
-	"grove/internal/worktree"
+	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/ports"
+	"github.com/lukemelnik/grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )

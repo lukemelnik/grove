@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"grove/internal/config"
+	"github.com/lukemelnik/grove/internal/config"
 
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"

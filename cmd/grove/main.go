@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"grove/internal/cmd"
+	"github.com/lukemelnik/grove/internal/cmd"
 )
 
 func main() {
