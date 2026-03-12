@@ -237,8 +237,10 @@ func (m *Manager) resolveBranch(branch, fromRef string) (BranchResolution, error
 
 	// Note: we already fetched origin above, no need to fetch again.
 
-	// Create new branch from base ref
-	_, err := m.git.Run("branch", "--", branch, baseRef)
+	// Create new branch from the chosen base ref without inheriting that ref as
+	// upstream. The feature branch should track its own remote branch on first
+	// push, not the base branch it was created from.
+	_, err := m.git.Run("branch", "--no-track", "--", branch, baseRef)
 	if err != nil {
 		return 0, fmt.Errorf("creating branch %q from %q: %w", branch, baseRef, err)
 	}

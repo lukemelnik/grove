@@ -70,7 +70,25 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		tmuxCfg = &config.TmuxConfig{}
 	}
 
-	// Step 4: Check if tmux session/window already exists
+	// Step 4: Resolve ports and env for this branch before interacting with tmux
+	// so invalid templates fail fast.
+	defaultBranch := wtMgr.DefaultBranch()
+	var portAssignment *ports.Assignment
+	if len(cfg.Services) > 0 {
+		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, defaultBranch)
+		if err != nil {
+			return fmt.Errorf("assigning ports: %w", err)
+		}
+	} else {
+		portAssignment = &ports.Assignment{Ports: map[string]int{}}
+	}
+
+	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch)
+	if err != nil {
+		return outputError(cmd, fmt.Errorf("resolving managed environment: %w", err))
+	}
+
+	// Step 5: Check if tmux session/window already exists
 	tmuxRunner := tmuxRunnerFactory()
 	tmuxMgr := tmux.NewManager(tmuxRunner)
 
@@ -88,40 +106,28 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		return tmuxMgr.Attach(name, mode)
 	}
 
-	// Worktree exists but no tmux session/window — create one
-
-	// Resolve ports and env for this branch
-	defaultBranch := wtMgr.DefaultBranch()
-	var portAssignment *ports.Assignment
-	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, defaultBranch)
-		if err != nil {
-			return fmt.Errorf("assigning ports: %w", err)
-		}
-	} else {
-		portAssignment = &ports.Assignment{Ports: map[string]int{}}
-	}
-
-	// Ensure .env files are symlinked and .env.local is up to date
-	if len(cfg.EnvFiles) > 0 {
-		if err := env.SymlinkEnvFiles(cfg.EnvFiles, projectRoot, found.Path); err != nil {
+	// Step 6: Ensure .env files are symlinked and .env.local is up to date
+	allEnvFiles := cfg.AllEnvFiles()
+	if len(allEnvFiles) > 0 {
+		if err := env.SymlinkEnvFiles(allEnvFiles, projectRoot, found.Path); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
 		}
-		managed := env.ManagedVars(cfg, portAssignment.Ports)
-		if len(managed) > 0 {
-			mappings := env.MapManagedToEnvFiles(cfg, managed, projectRoot)
+		mappings, err := managed.EnvLocalMappings(cfg, projectRoot)
+		if err != nil {
+			return outputError(cmd, fmt.Errorf("building .env.local mappings: %w", err))
+		}
+		if len(mappings) > 0 {
 			if err := env.WriteEnvLocals(mappings, found.Path); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
 			}
 		}
 	}
 
-	managed := env.ManagedVars(cfg, portAssignment.Ports)
-
+	// Step 7: Worktree exists but no tmux session/window — create one.
 	tmuxOpts := tmux.Options{
 		Branch:       branch,
 		WorktreePath: found.Path,
-		Env:          managed,
+		Env:          managed.SessionEnv(),
 		TmuxConfig:   tmuxCfg,
 		IncludeAll:   false,
 		IncludeWith:  nil,

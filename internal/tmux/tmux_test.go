@@ -393,7 +393,7 @@ func TestCreate_WindowMode(t *testing.T) {
 	}
 }
 
-func TestCreate_WindowModeFallsBackToSession(t *testing.T) {
+func TestCreate_WindowModeOutsideTmuxReturnsError(t *testing.T) {
 	// Not inside tmux
 	t.Setenv("TMUX", "")
 
@@ -414,14 +414,14 @@ func TestCreate_WindowModeFallsBackToSession(t *testing.T) {
 	}
 
 	err := mgr.Create(opts)
-	if err != nil {
-		t.Fatalf("Create failed: %v", err)
+	if err == nil {
+		t.Fatal("expected error when window mode is used outside tmux")
 	}
-
-	// Should fall back to creating a session
-	idx := runner.findCommand("new-session")
-	if idx < 0 {
-		t.Errorf("expected new-session fallback, got:\n%s", runner.commandString())
+	if !strings.Contains(err.Error(), "window mode requires running inside tmux") {
+		t.Fatalf("expected explicit window mode error, got: %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("expected no tmux commands on early window-mode failure, got:\n%s", runner.commandString())
 	}
 }
 
@@ -1519,6 +1519,30 @@ func TestAttach_InsideTmux_SwitchClient(t *testing.T) {
 	idx := runner.findCommand("switch-client", "-t", "test-session")
 	if idx < 0 {
 		t.Errorf("expected switch-client:\n%s", runner.commandString())
+	}
+}
+
+func TestAttach_InsideTmux_WindowMode_SelectsWindowNotSession(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux-1000/default,12345,0")
+
+	runner := newMockRunner()
+	// Simulate a separate session named "test" existing elsewhere. The attach
+	// path must still target the window "test" in the current tmux workflow.
+	runner.outputs["list-windows -a -F #{session_name} -f #{==:#{window_name},test}"] = "my-session"
+	mgr := NewManager(runner)
+
+	err := mgr.Attach("test", "window")
+	if err != nil {
+		t.Fatalf("Attach failed: %v", err)
+	}
+
+	selectIdx := runner.findCommand("select-window", "-t", "my-session:test")
+	if selectIdx < 0 {
+		t.Errorf("expected select-window with explicit session:window target:\n%s", runner.commandString())
+	}
+	switchIdx := runner.findCommand("switch-client", "-t", "test")
+	if switchIdx >= 0 {
+		t.Errorf("window mode inside tmux should not switch-client by branch/session name:\n%s", runner.commandString())
 	}
 }
 

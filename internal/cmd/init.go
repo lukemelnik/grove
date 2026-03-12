@@ -112,7 +112,7 @@ func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []strin
 			if err != nil || port <= 0 || port > 65535 {
 				return fmt.Errorf("invalid port %q for service %q", parts[1], name)
 			}
-			cfg.Services[name] = config.Service{Port: port, Env: parts[2]}
+			cfg.Services[name] = config.Service{Port: config.ServicePort{Base: port, Env: parts[2]}}
 		}
 	}
 
@@ -248,8 +248,7 @@ func runInitInteractive(cmd *cobra.Command, force bool) error {
 		}
 
 		cfg.Services[name] = config.Service{
-			Port: port,
-			Env:  envName,
+			Port: config.ServicePort{Base: port, Env: envName},
 		}
 		fmt.Fprintf(w, "  Added service %q (port %d, env %s)\n", name, port, envName)
 	}

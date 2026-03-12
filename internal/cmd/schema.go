@@ -15,43 +15,61 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 # Default: "../.grove-worktrees"
 worktree_dir: ../.grove-worktrees
 
-# Env files to load. Paths must be relative to the project root and
-# cannot escape it (no absolute paths or "../" prefixes).
-# In worktrees, these files are symlinked from the main repo.
-# Grove writes .env.local files next to each symlink with
-# branch-specific port assignments and template-resolved vars.
+# Env files to symlink from the main repo (for files not tied to a service).
+# Paths must be relative to the project root and cannot escape it.
+# Grove writes .env.local files next to each symlink with managed vars.
+# Service env files (see services below) are auto-included — no need to
+# list them here too.
 env_files:
   - .env
-  - apps/api/.env
 
-# Services with base ports. The default branch (main/master) uses these
+# Services with base ports. The default branch (main/master) uses the base
 # ports directly. Other branches get a deterministic offset added,
 # so branches never collide.
 #
-# Required fields:
-#   port: base port number (1-65535)
-#   env:  environment variable name to set (e.g. PORT)
+# Each service can declare:
+#   port:     base port and which env var receives the assigned port
+#   env_file: the .env file for this service (symlinked + .env.local written)
+#             required when using service-level env below
+#   env:      additional env vars scoped to this service's .env.local
+#
+# Template variables:
+#   {{service_name.port}} — resolves to the assigned port for a service
+#   {{branch}}            — resolves to the worktree branch name
 services:
   api:
-    port: 4000
-    env: PORT
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      env: PORT
+    env:
+      CORS_ORIGIN: "http://localhost:{{web.port}}"
   web:
-    port: 3000
-    env: WEB_PORT
+    env_file: apps/web/.env
+    port:
+      base: 3000
+      env: WEB_PORT
+    env:
+      VITE_API_URL: "http://localhost:{{api.port}}"
+      VITE_APP_URL: "http://localhost:{{web.port}}"
+      VITE_WORKTREE_NAME: "{{branch}}"
 
-# Additional environment variables. Values can reference service ports
-# with {{service_name.port}} templates.
+# Additional environment variables (global, written to all .env.local files).
+# Most configs won't need this — prefer service-level env above.
+# Values can reference {{service_name.port}} and {{branch}} templates.
 env:
-  VITE_API_URL: "http://localhost:{{api.port}}"
-  CORS_ORIGIN: "http://localhost:{{web.port}}"
   LOG_LEVEL: debug
 
 # Tmux workspace configuration (optional).
 # If omitted, grove create still opens a basic tmux window/session.
 # Use --no-tmux to skip tmux entirely.
+# In session mode, Grove injects top-level env vars plus each service's port
+# env var via tmux as a fallback. Service-scoped env values stay in that
+# service's .env.local file.
 tmux:
   # mode: "window" (default) or "session"
   #   window  — each worktree gets a window in your current tmux session
+  #             (run grove create from inside tmux)
   #   session — each worktree gets its own tmux session
   mode: window
 

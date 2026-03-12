@@ -18,8 +18,9 @@ func TestListCmd_Empty(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -60,11 +61,13 @@ func TestListCmd_WithWorktrees(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
   web:
-    port: 3000
-    env: WEB_PORT
+    port:
+      base: 3000
+      env: WEB_PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -126,8 +129,9 @@ func TestListCmd_JSON(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 

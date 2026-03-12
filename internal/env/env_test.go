@@ -197,7 +197,7 @@ func TestResolveTemplates_Basic(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result, err := ResolveTemplates(tt.input, ports)
+		result, err := ResolveTemplates(tt.input, ports, "")
 		if err != nil {
 			t.Errorf("ResolveTemplates(%q): unexpected error: %v", tt.input, err)
 			continue
@@ -211,19 +211,29 @@ func TestResolveTemplates_Basic(t *testing.T) {
 func TestResolveTemplates_UnknownService(t *testing.T) {
 	ports := map[string]int{"api": 4045}
 
-	_, err := ResolveTemplates("{{unknown.port}}", ports)
+	_, err := ResolveTemplates("{{unknown.port}}", ports, "")
 	if err == nil {
 		t.Fatal("expected error for unknown service")
 	}
 }
 
 func TestResolveTemplates_EmptyPorts(t *testing.T) {
-	result, err := ResolveTemplates("no templates", map[string]int{})
+	result, err := ResolveTemplates("no templates", map[string]int{}, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result != "no templates" {
 		t.Errorf("expected unchanged string, got %q", result)
+	}
+}
+
+func TestResolveTemplates_Branch(t *testing.T) {
+	result, err := ResolveTemplates("{{branch}}", map[string]int{}, "feat/auth")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "feat/auth" {
+		t.Errorf("expected branch template to resolve, got %q", result)
 	}
 }
 
@@ -238,8 +248,8 @@ func TestResolve_FullPipeline(t *testing.T) {
 	cfg := &config.Config{
 		EnvFiles: []string{".env"},
 		Services: map[string]config.Service{
-			"api": {Port: 4000, Env: "PORT"},
-			"web": {Port: 3000, Env: "WEB_PORT"},
+			"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
+			"web": {Port: config.ServicePort{Base: 3000, Env: "WEB_PORT"}},
 		},
 		Env: map[string]string{
 			"VITE_API_URL": "http://localhost:{{api.port}}",
@@ -253,7 +263,7 @@ func TestResolve_FullPipeline(t *testing.T) {
 		"web": 3045,
 	}
 
-	result, err := Resolve(cfg, ports, dir)
+	result, err := Resolve(cfg, ports, "", dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -289,7 +299,7 @@ func TestResolve_Precedence(t *testing.T) {
 	cfg := &config.Config{
 		EnvFiles: []string{".env"},
 		Services: map[string]config.Service{
-			"api": {Port: 4000, Env: "PORT"},
+			"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 		},
 		Env: map[string]string{
 			"CUSTOM": "from_env_block",
@@ -298,7 +308,7 @@ func TestResolve_Precedence(t *testing.T) {
 
 	ports := map[string]int{"api": 4045}
 
-	result, err := Resolve(cfg, ports, dir)
+	result, err := Resolve(cfg, ports, "", dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -314,13 +324,13 @@ func TestResolve_Precedence(t *testing.T) {
 func TestResolve_NoEnvFiles(t *testing.T) {
 	cfg := &config.Config{
 		Services: map[string]config.Service{
-			"api": {Port: 4000, Env: "PORT"},
+			"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 		},
 	}
 
 	ports := map[string]int{"api": 4050}
 
-	result, err := Resolve(cfg, ports, "")
+	result, err := Resolve(cfg, ports, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -335,7 +345,7 @@ func TestResolve_MissingEnvFile(t *testing.T) {
 		EnvFiles: []string{".env.nonexistent"},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "/tmp")
+	_, err := Resolve(cfg, map[string]int{}, "", "/tmp")
 	if err == nil {
 		t.Fatal("expected error for missing env file")
 	}
@@ -348,7 +358,7 @@ func TestResolve_TemplateError(t *testing.T) {
 		},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "")
+	_, err := Resolve(cfg, map[string]int{}, "", "")
 	if err == nil {
 		t.Fatal("expected error for unknown service in template")
 	}
@@ -375,7 +385,7 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 		EnvFiles: []string{".env", "apps/api/.env"},
 	}
 
-	result, err := Resolve(cfg, map[string]int{}, dir)
+	result, err := Resolve(cfg, map[string]int{}, "", dir)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -393,7 +403,7 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 
 func TestResolve_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{}
-	result, err := Resolve(cfg, map[string]int{}, "")
+	result, err := Resolve(cfg, map[string]int{}, "", "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -443,19 +453,35 @@ KEY5=no_comment_here
 	}
 }
 
-func TestManagedVars(t *testing.T) {
+func TestBuildManagedEnv_SessionEnv(t *testing.T) {
 	cfg := &config.Config{
 		Services: map[string]config.Service{
-			"api": {Port: 4000, Env: "PORT"},
-			"web": {Port: 3000, Env: "WEB_PORT"},
+			"api": {
+				Port:    config.ServicePort{Base: 4000, Env: "PORT"},
+				EnvFile: "apps/api/.env",
+				Env: map[string]string{
+					"API_URL": "http://localhost:{{api.port}}",
+				},
+			},
+			"web": {
+				Port:    config.ServicePort{Base: 3000, Env: "WEB_PORT"},
+				EnvFile: "apps/web/.env",
+				Env: map[string]string{
+					"API_URL": "http://localhost:{{web.port}}",
+				},
+			},
 		},
 		Env: map[string]string{
-			"VITE_API_URL": "http://localhost:{{api.port}}",
+			"GLOBAL_URL": "http://localhost:{{api.port}}",
 		},
 	}
 
 	ports := map[string]int{"api": 4045, "web": 3045}
-	result := ManagedVars(cfg, ports)
+	managed, err := BuildManagedEnv(cfg, ports, "feat/auth")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	result := managed.SessionEnv()
 
 	if result["PORT"] != "4045" {
 		t.Errorf("expected PORT=4045, got %q", result["PORT"])
@@ -463,12 +489,15 @@ func TestManagedVars(t *testing.T) {
 	if result["WEB_PORT"] != "3045" {
 		t.Errorf("expected WEB_PORT=3045, got %q", result["WEB_PORT"])
 	}
-	if result["VITE_API_URL"] != "http://localhost:4045" {
-		t.Errorf("expected VITE_API_URL resolved, got %q", result["VITE_API_URL"])
+	if result["GLOBAL_URL"] != "http://localhost:4045" {
+		t.Errorf("expected GLOBAL_URL resolved, got %q", result["GLOBAL_URL"])
+	}
+	if _, exists := result["API_URL"]; exists {
+		t.Fatalf("service-scoped env vars should not be injected into session env, got %v", result)
 	}
 }
 
-func TestMapManagedToEnvFiles(t *testing.T) {
+func TestManagedEnv_EnvLocalMappings(t *testing.T) {
 	dir := t.TempDir()
 
 	apiDir := filepath.Join(dir, "apps", "api")
@@ -488,39 +517,120 @@ func TestMapManagedToEnvFiles(t *testing.T) {
 	}
 
 	cfg := &config.Config{
-		EnvFiles: []string{"apps/api/.env", "apps/web/.env"},
+		EnvFiles: []string{".env"},
+		Services: map[string]config.Service{
+			"api": {
+				Port:    config.ServicePort{Base: 4000, Env: "PORT"},
+				EnvFile: "apps/api/.env",
+				Env: map[string]string{
+					"API_URL": "http://localhost:{{api.port}}",
+				},
+			},
+			"web": {
+				Port:    config.ServicePort{Base: 3000, Env: "WEB_PORT"},
+				EnvFile: "apps/web/.env",
+				Env: map[string]string{
+					"API_URL":            "http://localhost:{{web.port}}",
+					"VITE_WORKTREE_NAME": "{{branch}}",
+				},
+			},
+		},
+		Env: map[string]string{
+			"GLOBAL_FLAG": "enabled",
+		},
 	}
 
-	managed := map[string]string{
-		"PORT":         "4045",
-		"WEB_PORT":     "3045",
-		"VITE_API_URL": "http://localhost:4045",
-		"NEW_VAR":      "not_in_any_file",
+	rootEnv := filepath.Join(dir, ".env")
+	if err := os.WriteFile(rootEnv, []byte("ROOT_ONLY=yes\nORPHAN_PORT=1234\n"), 0644); err != nil {
+		t.Fatal(err)
 	}
 
-	mappings := MapManagedToEnvFiles(cfg, managed, dir)
+	ports := map[string]int{
+		"api": 4045,
+		"web": 3045,
+	}
+
+	managed, err := BuildManagedEnv(cfg, ports, "feat/auth")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mappings, err := managed.EnvLocalMappings(cfg, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rootLocal := findMapping(mappings, ".env.local")
+	if rootLocal == nil {
+		t.Fatal("expected .env.local mapping")
+	}
+	if rootLocal.Vars["GLOBAL_FLAG"] != "enabled" {
+		t.Errorf("expected global env in root .env.local, got %v", rootLocal.Vars)
+	}
 
 	apiLocal := findMapping(mappings, "apps/api/.env.local")
 	if apiLocal == nil {
 		t.Fatal("expected apps/api/.env.local mapping")
 	}
+	if apiLocal.Vars["GLOBAL_FLAG"] != "enabled" {
+		t.Errorf("expected global env in api .env.local, got %v", apiLocal.Vars)
+	}
 	if apiLocal.Vars["PORT"] != "4045" {
 		t.Errorf("expected PORT in api .env.local, got %v", apiLocal.Vars)
+	}
+	if apiLocal.Vars["API_URL"] != "http://localhost:4045" {
+		t.Errorf("expected API_URL in api .env.local, got %v", apiLocal.Vars)
 	}
 
 	webLocal := findMapping(mappings, "apps/web/.env.local")
 	if webLocal == nil {
 		t.Fatal("expected apps/web/.env.local mapping")
 	}
+	if webLocal.Vars["GLOBAL_FLAG"] != "enabled" {
+		t.Errorf("expected global env in web .env.local, got %v", webLocal.Vars)
+	}
 	if webLocal.Vars["WEB_PORT"] != "3045" {
 		t.Errorf("expected WEB_PORT in web .env.local")
 	}
-	if webLocal.Vars["VITE_API_URL"] != "http://localhost:4045" {
-		t.Errorf("expected VITE_API_URL in web .env.local")
+	if webLocal.Vars["API_URL"] != "http://localhost:3045" {
+		t.Errorf("expected service-specific API_URL in web .env.local, got %v", webLocal.Vars)
 	}
-	// NEW_VAR should end up in the last env file's .env.local
-	if webLocal.Vars["NEW_VAR"] != "not_in_any_file" {
-		t.Errorf("expected NEW_VAR in last .env.local, got %v", webLocal.Vars)
+	if webLocal.Vars["VITE_WORKTREE_NAME"] != "feat/auth" {
+		t.Errorf("expected branch template in web .env.local, got %v", webLocal.Vars)
+	}
+}
+
+func TestManagedEnv_EnvLocalMappings_RoutesOrphanPortByTopLevelEnvFile(t *testing.T) {
+	dir := t.TempDir()
+
+	rootEnv := filepath.Join(dir, ".env")
+	if err := os.WriteFile(rootEnv, []byte("PORT=3000\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{
+		EnvFiles: []string{".env"},
+		Services: map[string]config.Service{
+			"api": {
+				Port: config.ServicePort{Base: 4000, Env: "PORT"},
+			},
+		},
+	}
+
+	managed, err := BuildManagedEnv(cfg, map[string]int{"api": 4045}, "feat/auth")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	mappings, err := managed.EnvLocalMappings(cfg, dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	rootLocal := findMapping(mappings, ".env.local")
+	if rootLocal == nil {
+		t.Fatal("expected .env.local mapping")
+	}
+	if rootLocal.Vars["PORT"] != "4045" {
+		t.Errorf("expected orphan port to fall back to top-level env file, got %v", rootLocal.Vars)
 	}
 }
 

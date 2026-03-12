@@ -58,11 +58,13 @@ func TestCreateCmd_TextOutput(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
   web:
-    port: 3000
-    env: WEB_PORT
+    port:
+      base: 3000
+      env: WEB_PORT
 env:
   VITE_API_URL: "http://localhost:{{api.port}}"
 `
@@ -131,11 +133,13 @@ func TestCreateCmd_JSONOutput(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
   web:
-    port: 3000
-    env: WEB_PORT
+    port:
+      base: 3000
+      env: WEB_PORT
 env:
   VITE_API_URL: "http://localhost:{{api.port}}"
 `
@@ -200,8 +204,9 @@ func TestCreateCmd_NewBranchFromRef(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -243,8 +248,9 @@ func TestCreateCmd_ReuseExistingWorktree(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -329,6 +335,58 @@ func TestCreateCmd_MinimalConfig(t *testing.T) {
 	}
 	if len(result.Ports) != 0 {
 		t.Errorf("expected empty ports for no-services config, got %v", result.Ports)
+	}
+}
+
+func TestCreateCmd_InvalidServiceTemplateFailsBeforeCreatingWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      env: PORT
+    env:
+      API_URL: "http://localhost:{{branh}}"
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitCmd := exec.Command("git", "branch", "feat/bad-template")
+	gitCmd.Dir = repoDir
+	if out, err := gitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git branch failed: %s: %v", string(out), err)
+	}
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+	mockTerminal(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/bad-template", "--no-tmux"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected create to fail for invalid service env template")
+	}
+	if !strings.Contains(err.Error(), "resolving managed environment") {
+		t.Fatalf("expected managed environment error, got %v", err)
+	}
+	if strings.Contains(buf.String(), "Created worktree") {
+		t.Fatalf("create should fail before printing success output, got:\n%s", buf.String())
+	}
+
+	expectedPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/bad-template")
+	if _, statErr := os.Stat(expectedPath); !os.IsNotExist(statErr) {
+		t.Fatalf("expected no worktree at %s, stat err=%v", expectedPath, statErr)
 	}
 }
 

@@ -302,7 +302,7 @@ func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
-	git.On("branch -- feat/new refs/remotes/origin/main", "", nil)
+	git.On("branch --no-track -- feat/new refs/remotes/origin/main", "", nil)
 	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -326,7 +326,7 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	git.On("rev-parse --verify refs/heads/feat/new", "", fmt.Errorf("not found"))
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
-	git.On("branch -- feat/new origin/develop", "", nil)
+	git.On("branch --no-track -- feat/new origin/develop", "", nil)
 	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -340,7 +340,7 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	if result.Resolution != BranchNew {
 		t.Errorf("expected resolution=new, got %s", result.Resolution)
 	}
-	if !git.wasCalled("branch -- feat/new origin/develop") {
+	if !git.wasCalled("branch --no-track -- feat/new origin/develop") {
 		t.Error("expected branch creation from origin/develop")
 	}
 }
@@ -621,6 +621,47 @@ func TestIntegration_CreateWorktree_NewBranch(t *testing.T) {
 	// Verify worktree directory exists
 	if _, err := os.Stat(result.Path); os.IsNotExist(err) {
 		t.Error("worktree directory was not created")
+	}
+}
+
+func TestIntegration_CreateWorktree_NewBranchFromRemoteBaseDoesNotTrackBase(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	repoDir, worktreeDir := setupTestRepo(t)
+	remoteDir := t.TempDir()
+
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed in %s: %s: %v", strings.Join(args, " "), dir, string(out), err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+
+	run(remoteDir, "init", "--bare", "-b", "main")
+	run(repoDir, "remote", "add", "origin", remoteDir)
+	run(repoDir, "push", "-u", "origin", "main")
+	run(repoDir, "fetch", "origin")
+
+	git := NewGitRunner(repoDir)
+	mgr := NewManager(git, repoDir, worktreeDir)
+
+	result, err := mgr.Create("feat/no-track", "origin/main")
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if result.Resolution != BranchNew {
+		t.Fatalf("expected resolution=new, got %s", result.Resolution)
+	}
+
+	upstream := run(repoDir, "for-each-ref", "--format=%(upstream:short)", "refs/heads/feat/no-track")
+	if upstream != "" {
+		t.Fatalf("expected no upstream for new branch created from remote base, got %q", upstream)
 	}
 }
 

@@ -77,7 +77,7 @@ func Assign(services map[string]config.Service, branchName string, maxOffset int
 
 		for _, name := range names {
 			svc := services[name]
-			port := svc.Port + offset
+			port := svc.Port.Base + offset
 
 			// Check port is in valid range
 			if port > 65535 {

@@ -173,12 +173,7 @@ func (m *Manager) Create(opts Options) error {
 	case "window":
 		session, err := m.currentSession()
 		if err != nil {
-			// Fallback to session mode if not inside tmux
-			if err := m.createSession(name, opts.WorktreePath); err != nil {
-				return fmt.Errorf("creating tmux session (fallback): %w", err)
-			}
-			mode = "session"
-			break
+			return fmt.Errorf("window mode requires running inside tmux; start tmux and rerun, or set tmux.mode=session: %w", err)
 		}
 		if err := m.createWindow(session, name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
@@ -507,8 +502,28 @@ func (m *Manager) Attach(name, mode string) error {
 // doAttach implements the attach/switch logic.
 func (m *Manager) doAttach(name, mode string) error {
 	if os.Getenv("TMUX") != "" {
-		// Already inside tmux — switch client
-		_, err := m.runner.Run("switch-client", "-t", name)
+		if mode == "session" {
+			// Already inside tmux — switch to the target session.
+			_, err := m.runner.Run("switch-client", "-t", name)
+			return err
+		}
+
+		// Window mode inside tmux — select the actual window target instead of
+		// treating the branch name like a session target. This avoids collisions
+		// when a separate tmux session already exists with the same name.
+		sessionName, err := m.findWindowSession(name)
+		if err == nil {
+			_, err = m.runner.Run("select-window", "-t", sessionName+":"+name)
+			return err
+		}
+
+		currentSession, currentErr := m.currentSession()
+		if currentErr == nil {
+			_, err = m.runner.Run("select-window", "-t", currentSession+":"+name)
+			return err
+		}
+
+		_, err = m.runner.Run("select-window", "-t", name)
 		return err
 	}
 

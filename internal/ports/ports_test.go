@@ -79,8 +79,8 @@ func TestIsPortBlocked(t *testing.T) {
 
 func TestAssign_Basic(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
-		"web": {Port: 3000, Env: "WEB_PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
+		"web": {Port: config.ServicePort{Base: 3000, Env: "WEB_PORT"}},
 	}
 
 	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
@@ -107,7 +107,7 @@ func TestAssign_Basic(t *testing.T) {
 
 func TestAssign_Deterministic(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	result1, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
@@ -127,7 +127,7 @@ func TestAssign_Deterministic(t *testing.T) {
 
 func TestAssign_BlockedPortSkipped(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	if !IsPortBlocked(4045) {
@@ -148,7 +148,7 @@ func TestAssign_BlockedPortSkipped(t *testing.T) {
 func TestAssign_PortOverflow(t *testing.T) {
 	// Base port near 65535 — offset could push it over
 	services := map[string]config.Service{
-		"api": {Port: 65000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 65000, Env: "PORT"}},
 	}
 
 	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "")
@@ -177,7 +177,7 @@ func TestAssign_EmptyServices(t *testing.T) {
 
 func TestAssign_DefaultMaxOffset(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	// Pass 0 for maxOffset to use default
@@ -195,8 +195,8 @@ func TestAssign_ConsistentAcrossCommands(t *testing.T) {
 	// Verify that the same branch always gets the same ports,
 	// regardless of how many times Assign is called
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
-		"web": {Port: 3000, Env: "WEB_PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
+		"web": {Port: config.ServicePort{Base: 3000, Env: "WEB_PORT"}},
 	}
 
 	results := make([]*Assignment, 5)
@@ -220,8 +220,8 @@ func TestAssign_ConsistentAcrossCommands(t *testing.T) {
 
 func TestAssign_DefaultBranchUsesBasePorts(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
-		"web": {Port: 3000, Env: "WEB_PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
+		"web": {Port: config.ServicePort{Base: 3000, Env: "WEB_PORT"}},
 	}
 
 	result, err := Assign(services, "main", DefaultMaxOffset, "main")
@@ -244,7 +244,7 @@ func TestAssign_DefaultBranchUsesBasePorts(t *testing.T) {
 
 func TestAssign_DefaultBranchMaster(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	result, err := Assign(services, "master", DefaultMaxOffset, "master")
@@ -263,7 +263,7 @@ func TestAssign_DefaultBranchMaster(t *testing.T) {
 
 func TestAssign_NonDefaultBranchStillGetsOffset(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	result, err := Assign(services, "feat/auth", DefaultMaxOffset, "main")
@@ -282,7 +282,7 @@ func TestAssign_NonDefaultBranchStillGetsOffset(t *testing.T) {
 
 func TestAssign_EmptyDefaultBranchFallsBackToHash(t *testing.T) {
 	services := map[string]config.Service{
-		"api": {Port: 4000, Env: "PORT"},
+		"api": {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
 	}
 
 	// When defaultBranch is empty, "main" should get a hash-based offset (not 0)

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/lukemelnik/grove/internal/tmux"
+	"github.com/lukemelnik/grove/internal/worktree"
 )
 
 func TestAttachCmd_NoWorktree(t *testing.T) {
@@ -19,8 +20,9 @@ func TestAttachCmd_NoWorktree(t *testing.T) {
 	groveYML := `worktree_dir: /tmp/grove-attach-test
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -55,8 +57,9 @@ func TestAttachCmd_WorktreeExistsNoTmuxConfig(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -118,8 +121,9 @@ func TestAttachCmd_WorktreeExistsWithTmux(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 tmux:
   mode: session
   layout: main-vertical
@@ -180,6 +184,68 @@ tmux:
 	}
 	if !foundNewSession {
 		t.Error("expected new-session command when no tmux session exists")
+	}
+}
+
+func TestAttachCmd_InvalidServiceTemplateFailsBeforeTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      env: PORT
+    env:
+      API_URL: "http://localhost:{{branh}}"
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	run("branch", "feat/bad-attach-template")
+	run("worktree", "add", worktree.WorktreePath(repoDir, worktreeDir, "feat/bad-attach-template"), "feat/bad-attach-template")
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	mock := &recordingTmuxRunner{
+		hasSessionResult: false,
+		hasWindowResult:  false,
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return mock }
+	defer func() { tmuxRunnerFactory = origFactory }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"attach", "feat/bad-attach-template"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected attach to fail for invalid service env template")
+	}
+	if !strings.Contains(err.Error(), "resolving managed environment") {
+		t.Fatalf("expected managed environment error, got %v", err)
+	}
+	if len(mock.commands) != 0 {
+		t.Fatalf("expected attach to fail before tmux commands, got %v", mock.commands)
 	}
 }
 

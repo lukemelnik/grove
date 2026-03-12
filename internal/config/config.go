@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -55,10 +56,26 @@ type Config struct {
 	Tmux *TmuxConfig `yaml:"tmux,omitempty"`
 }
 
-// Service represents a service with a base port and an env var name.
+// Service represents a service with a base port, an env file, and optional env vars.
 type Service struct {
-	// Port is the base port number for this service.
-	Port int `yaml:"port"`
+	// Port defines the base port and which env var receives the assigned port.
+	Port ServicePort `yaml:"port"`
+
+	// EnvFile is the .env file associated with this service (e.g. "apps/api/.env").
+	// Grove symlinks it from the main repo and writes service-scoped vars to
+	// its .env.local companion.
+	EnvFile string `yaml:"env_file,omitempty"`
+
+	// Env defines additional environment variables scoped to this service.
+	// Values can reference {{service.port}} and {{branch}} templates.
+	// These are written to the service's .env.local file.
+	Env map[string]string `yaml:"env,omitempty"`
+}
+
+// ServicePort defines the base port and which env var receives the assigned port.
+type ServicePort struct {
+	// Base is the base port number for this service.
+	Base int `yaml:"base"`
 
 	// Env is the environment variable name to set for this service's port.
 	Env string `yaml:"env"`
@@ -180,24 +197,68 @@ func Parse(data []byte) (*Config, error) {
 	return &cfg, nil
 }
 
+// AllEnvFiles returns the union of top-level env_files and service-level env_file
+// values, in order (top-level first, then service env files not already listed).
+func (cfg *Config) AllEnvFiles() []string {
+	seen := make(map[string]bool)
+	var result []string
+
+	for _, f := range cfg.EnvFiles {
+		if !seen[f] {
+			seen[f] = true
+			result = append(result, f)
+		}
+	}
+
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := cfg.Services[name]
+		if svc.EnvFile != "" && !seen[svc.EnvFile] {
+			seen[svc.EnvFile] = true
+			result = append(result, svc.EnvFile)
+		}
+	}
+
+	return result
+}
+
 // Validate checks that the config is well-formed.
 func Validate(cfg *Config) error {
 	// Validate services
 	envSeen := make(map[string]string) // env var name -> service name
 	for name, svc := range cfg.Services {
-		if svc.Port <= 0 || svc.Port > 65535 {
-			return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port)
+		if svc.Port.Base <= 0 || svc.Port.Base > 65535 {
+			return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port.Base)
 		}
-		if IsPortBlocked(svc.Port) {
-			return fmt.Errorf("service %q: port %d is browser-restricted (blocked by Chromium/Firefox) — pick a different base port", name, svc.Port)
+		if IsPortBlocked(svc.Port.Base) {
+			return fmt.Errorf("service %q: port %d is browser-restricted (blocked by Chromium/Firefox) — pick a different base port", name, svc.Port.Base)
 		}
-		if svc.Env == "" {
-			return fmt.Errorf("service %q: env var name is required", name)
+		if svc.Port.Env == "" {
+			return fmt.Errorf("service %q: port env var name is required", name)
 		}
-		if other, exists := envSeen[svc.Env]; exists {
-			return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Env)
+		if other, exists := envSeen[svc.Port.Env]; exists {
+			return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Port.Env)
 		}
-		envSeen[svc.Env] = name
+		envSeen[svc.Port.Env] = name
+		if len(svc.Env) > 0 && svc.EnvFile == "" {
+			return fmt.Errorf("service %q: env requires env_file so Grove knows where to write service-scoped vars", name)
+		}
+
+		// Validate service env_file path
+		if svc.EnvFile != "" {
+			if filepath.IsAbs(svc.EnvFile) {
+				return fmt.Errorf("service %q: env_file %q must be a relative path", name, svc.EnvFile)
+			}
+			cleaned := filepath.Clean(svc.EnvFile)
+			if strings.HasPrefix(cleaned, "..") {
+				return fmt.Errorf("service %q: env_file %q escapes the project root", name, svc.EnvFile)
+			}
+		}
 	}
 
 	// Validate env_files paths stay within project root
@@ -259,7 +320,11 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 	// Find the git repo root to bound our search
 	repoRoot, err := gitRepoRoot(dir)
 	if err != nil {
-		return "", "", fmt.Errorf("not a git repository (searched from %s) — run 'grove init' inside a git repo", dir)
+		return "", "", fmt.Errorf(
+			"not inside a git repository (started at %s) — grove only searches for %s within the current git repo; run 'grove init' inside a git repo",
+			dir,
+			ConfigFileName,
+		)
 	}
 
 	// Walk up the directory tree, stopping at the git repo root
@@ -290,7 +355,12 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 		}
 	}
 
-	return "", "", fmt.Errorf("no %s found in %s — run 'grove init' to create one", ConfigFileName, repoRoot)
+	return "", "", fmt.Errorf(
+		"git repository found at %s, but no %s was found from %s up to that repo root (or in the main repo root if this is a linked worktree) — run 'grove init' to create one",
+		repoRoot,
+		ConfigFileName,
+		dir,
+	)
 }
 
 // gitRepoRoot returns the top-level directory of the current git repository.

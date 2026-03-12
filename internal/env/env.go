@@ -17,8 +17,8 @@ import (
 	"github.com/lukemelnik/grove/internal/config"
 )
 
-// templatePattern matches {{service.port}} references in env values.
-var templatePattern = regexp.MustCompile(`\{\{(\w+)\.port\}\}`)
+// templatePattern matches {{service.port}} and {{branch}} references in env values.
+var templatePattern = regexp.MustCompile(`\{\{(\w+(?:\.\w+)?)\}\}`)
 
 // ParseEnvFile reads a .env file and returns a map of key-value pairs.
 // It handles:
@@ -85,46 +85,282 @@ func ParseEnvContent(content string) (map[string]string, error) {
 	return result, nil
 }
 
-// ResolveTemplates replaces {{service.port}} references in a string
-// using the provided port map (service name -> port number).
-// Returns the resolved string and an error if any referenced service is not found.
-func ResolveTemplates(value string, ports map[string]int) (string, error) {
+// ResolveTemplates replaces {{service.port}} and {{branch}} references in a
+// string using the provided port map and branch name.
+// Returns the resolved string and an error if any referenced template is unknown.
+func ResolveTemplates(value string, ports map[string]int, branch string) (string, error) {
 	var resolveErr error
 
 	resolved := templatePattern.ReplaceAllStringFunc(value, func(match string) string {
-		// Extract the service name from {{service.port}}
 		submatch := templatePattern.FindStringSubmatch(match)
 		if len(submatch) < 2 {
 			return match
 		}
-		serviceName := submatch[1]
-		port, ok := ports[serviceName]
-		if !ok {
-			resolveErr = fmt.Errorf("unknown service %q in template %q", serviceName, match)
-			return match
+		ref := submatch[1]
+
+		if ref == "branch" {
+			return branch
 		}
-		return fmt.Sprintf("%d", port)
+
+		parts := strings.SplitN(ref, ".", 2)
+		if len(parts) == 2 && parts[1] == "port" {
+			port, ok := ports[parts[0]]
+			if !ok {
+				resolveErr = fmt.Errorf("unknown service %q in template %q", parts[0], match)
+				return match
+			}
+			return fmt.Sprintf("%d", port)
+		}
+
+		resolveErr = fmt.Errorf("unknown template %q", match)
+		return match
 	})
 
 	return resolved, resolveErr
 }
 
-// Resolve computes the final set of environment variables for a worktree.
+// ServiceManagedEnv describes the managed env vars for a single service.
+type ServiceManagedEnv struct {
+	Name    string
+	EnvFile string
+	PortKey string
+	PortVal string
+	Vars    map[string]string
+}
+
+// ManagedEnv groups global env vars, unique service port vars, and service-
+// scoped env vars so runtime code can write .env.local files without losing
+// service ownership.
+type ManagedEnv struct {
+	Global   map[string]string
+	Services map[string]ServiceManagedEnv
+}
+
+// SessionEnv returns the session-wide env for tmux fallback injection.
+// Only top-level env vars and service port vars are included here; service-
+// scoped env vars stay in their service's .env.local file.
+func (m *ManagedEnv) SessionEnv() map[string]string {
+	result := make(map[string]string, len(m.Global)+len(m.Services))
+
+	for k, v := range m.Global {
+		result[k] = v
+	}
+
+	names := make([]string, 0, len(m.Services))
+	for name := range m.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := m.Services[name]
+		if svc.PortKey != "" && svc.PortVal != "" {
+			result[svc.PortKey] = svc.PortVal
+		}
+	}
+
+	return result
+}
+
+// EnvLocalMappings builds the .env.local write plan for all configured env
+// files. Top-level env vars are written to every .env.local file. Service-
+// scoped vars and service port vars are written only to that service's
+// env_file.local. Port vars for services without env_file fall back to the
+// top-level env_files list using key matching, then the last top-level env file.
+func (m *ManagedEnv) EnvLocalMappings(cfg *config.Config, projectRoot string) ([]EnvLocalMapping, error) {
+	allEnvFiles := cfg.AllEnvFiles()
+	if len(allEnvFiles) == 0 {
+		return nil, nil
+	}
+
+	mappingIndex := make(map[string]int)
+	var mappings []EnvLocalMapping
+
+	addToMapping := func(localPath, key, val string) {
+		idx, exists := mappingIndex[localPath]
+		if !exists {
+			idx = len(mappings)
+			mappingIndex[localPath] = idx
+			mappings = append(mappings, EnvLocalMapping{RelPath: localPath, Vars: make(map[string]string)})
+		}
+		mappings[idx].Vars[key] = val
+	}
+
+	globalKeys := make([]string, 0, len(m.Global))
+	for key := range m.Global {
+		globalKeys = append(globalKeys, key)
+	}
+	sort.Strings(globalKeys)
+
+	for _, envFile := range allEnvFiles {
+		localPath := envFile + ".local"
+		for _, key := range globalKeys {
+			addToMapping(localPath, key, m.Global[key])
+		}
+	}
+
+	names := make([]string, 0, len(m.Services))
+	for name := range m.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	orphanPorts := make(map[string]string)
+	for _, name := range names {
+		svc := m.Services[name]
+
+		if svc.EnvFile == "" {
+			if svc.PortKey != "" && svc.PortVal != "" {
+				orphanPorts[svc.PortKey] = svc.PortVal
+			}
+			continue
+		}
+
+		localPath := svc.EnvFile + ".local"
+		if svc.PortKey != "" && svc.PortVal != "" {
+			addToMapping(localPath, svc.PortKey, svc.PortVal)
+		}
+
+		keys := make([]string, 0, len(svc.Vars))
+		for key := range svc.Vars {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			addToMapping(localPath, key, svc.Vars[key])
+		}
+	}
+
+	if len(orphanPorts) > 0 && len(cfg.EnvFiles) > 0 {
+		placed := make(map[string]bool)
+		for _, envFile := range cfg.EnvFiles {
+			absPath := envFile
+			if projectRoot != "" && !filepath.IsAbs(absPath) {
+				absPath = filepath.Join(projectRoot, absPath)
+			}
+
+			existing, err := ParseEnvFile(absPath)
+			if err != nil {
+				continue
+			}
+
+			localPath := envFile + ".local"
+			for key, val := range orphanPorts {
+				if placed[key] {
+					continue
+				}
+				if _, inFile := existing[key]; inFile {
+					addToMapping(localPath, key, val)
+					placed[key] = true
+				}
+			}
+		}
+
+		lastLocal := cfg.EnvFiles[len(cfg.EnvFiles)-1] + ".local"
+		orphanKeys := make([]string, 0, len(orphanPorts))
+		for key := range orphanPorts {
+			orphanKeys = append(orphanKeys, key)
+		}
+		sort.Strings(orphanKeys)
+		for _, key := range orphanKeys {
+			if !placed[key] {
+				addToMapping(lastLocal, key, orphanPorts[key])
+			}
+		}
+	}
+
+	filtered := make([]EnvLocalMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		if len(mapping.Vars) == 0 {
+			continue
+		}
+		filtered = append(filtered, mapping)
+	}
+
+	return filtered, nil
+}
+
+func resolveGlobalEnv(cfg *config.Config, ports map[string]int, branch string) (map[string]string, error) {
+	result := make(map[string]string)
+	for k, v := range cfg.Env {
+		resolved, err := ResolveTemplates(v, ports, branch)
+		if err != nil {
+			return nil, fmt.Errorf("resolving template in env var %s: %w", k, err)
+		}
+		result[k] = resolved
+	}
+	return result, nil
+}
+
+// BuildManagedEnv resolves Grove-managed env vars while preserving service
+// ownership for service-scoped values.
+func BuildManagedEnv(cfg *config.Config, ports map[string]int, branch string) (*ManagedEnv, error) {
+	global, err := resolveGlobalEnv(cfg, ports, branch)
+	if err != nil {
+		return nil, err
+	}
+
+	services := make(map[string]ServiceManagedEnv, len(cfg.Services))
+	names := make([]string, 0, len(cfg.Services))
+	for name := range cfg.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := cfg.Services[name]
+		entry := ServiceManagedEnv{
+			Name:    name,
+			EnvFile: svc.EnvFile,
+			PortKey: svc.Port.Env,
+			Vars:    make(map[string]string, len(svc.Env)),
+		}
+
+		if port, ok := ports[name]; ok {
+			entry.PortVal = fmt.Sprintf("%d", port)
+		}
+
+		keys := make([]string, 0, len(svc.Env))
+		for key := range svc.Env {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
+		for _, key := range keys {
+			resolved, err := ResolveTemplates(svc.Env[key], ports, branch)
+			if err != nil {
+				return nil, fmt.Errorf("resolving template in service %s env var %s: %w", name, key, err)
+			}
+			entry.Vars[key] = resolved
+		}
+
+		services[name] = entry
+	}
+
+	return &ManagedEnv{
+		Global:   global,
+		Services: services,
+	}, nil
+}
+
+// Resolve computes the flattened environment variables for a worktree.
 //
 // Parameters:
 //   - cfg: the parsed .grove.yml configuration
 //   - ports: map of service name to assigned port (from port hashing)
+//   - branch: the branch name (for {{branch}} template resolution)
 //   - projectRoot: the project root directory (for resolving relative env file paths)
 //
 // Resolution order (last wins):
-//  1. .env files from cfg.EnvFiles
-//  2. env block from cfg.Env (with template resolution)
-//  3. service port vars (e.g., PORT=4045)
-func Resolve(cfg *config.Config, ports map[string]int, projectRoot string) (map[string]string, error) {
+//  1. .env files from cfg.EnvFiles and service env_file fields
+//  2. top-level env block (with template resolution)
+//  3. service-level env blocks (with template resolution)
+//  4. service port vars (e.g., PORT=4045)
+func Resolve(cfg *config.Config, ports map[string]int, branch string, projectRoot string) (map[string]string, error) {
 	result := make(map[string]string)
 
 	// Step 1: Read all .env files (order matters, later files override earlier ones)
-	for _, envFile := range cfg.EnvFiles {
+	for _, envFile := range cfg.AllEnvFiles() {
 		path := envFile
 		if projectRoot != "" && !filepath.IsAbs(path) {
 			path = filepath.Join(projectRoot, path)
@@ -138,121 +374,48 @@ func Resolve(cfg *config.Config, ports map[string]int, projectRoot string) (map[
 		}
 	}
 
-	// Step 2: Apply env block from config (with template resolution)
-	for k, v := range cfg.Env {
-		resolved, err := ResolveTemplates(v, ports)
-		if err != nil {
-			return nil, fmt.Errorf("resolving template in env var %s: %w", k, err)
-		}
-		result[k] = resolved
+	managed, err := BuildManagedEnv(cfg, ports, branch)
+	if err != nil {
+		return nil, err
 	}
 
-	// Step 3: Apply service port vars (always win over env block)
-	for name, svc := range cfg.Services {
-		port, ok := ports[name]
-		if !ok {
-			continue
+	for k, v := range managed.Global {
+		result[k] = v
+	}
+
+	names := make([]string, 0, len(managed.Services))
+	for name := range managed.Services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		svc := managed.Services[name]
+		keys := make([]string, 0, len(svc.Vars))
+		for key := range svc.Vars {
+			keys = append(keys, key)
 		}
-		result[svc.Env] = fmt.Sprintf("%d", port)
+		sort.Strings(keys)
+
+		for _, key := range keys {
+			if existing, exists := result[key]; exists && existing != svc.Vars[key] {
+				return nil, fmt.Errorf("cannot flatten service-scoped env var %q from service %q; it conflicts with another env source", key, name)
+			}
+			result[key] = svc.Vars[key]
+		}
+
+		if svc.PortKey != "" && svc.PortVal != "" {
+			result[svc.PortKey] = svc.PortVal
+		}
 	}
 
 	return result, nil
-}
-
-// ManagedVars computes the grove-managed env vars: service ports and
-// resolved env block templates. These are the branch-specific values
-// written to .env.local files.
-func ManagedVars(cfg *config.Config, ports map[string]int) map[string]string {
-	result := make(map[string]string)
-
-	for k, v := range cfg.Env {
-		resolved, err := ResolveTemplates(v, ports)
-		if err == nil {
-			result[k] = resolved
-		}
-	}
-
-	for name, svc := range cfg.Services {
-		port, ok := ports[name]
-		if !ok {
-			continue
-		}
-		result[svc.Env] = fmt.Sprintf("%d", port)
-	}
-
-	return result
 }
 
 // EnvLocalMapping describes a .env.local file to write in the worktree.
 type EnvLocalMapping struct {
 	RelPath string
 	Vars    map[string]string
-}
-
-// MapManagedToEnvFiles determines which managed vars go in which .env.local file.
-// For each env file, it parses the original to find which keys it contains.
-// Managed vars whose keys appear in that env file go into its .env.local.
-// Managed vars not found in any env file go into the last env file's .env.local.
-func MapManagedToEnvFiles(cfg *config.Config, managed map[string]string, projectRoot string) []EnvLocalMapping {
-	if len(cfg.EnvFiles) == 0 || len(managed) == 0 {
-		return nil
-	}
-
-	placed := make(map[string]bool)
-	var mappings []EnvLocalMapping
-
-	for _, envFile := range cfg.EnvFiles {
-		absPath := envFile
-		if projectRoot != "" && !filepath.IsAbs(absPath) {
-			absPath = filepath.Join(projectRoot, absPath)
-		}
-
-		existing, err := ParseEnvFile(absPath)
-		if err != nil {
-			continue
-		}
-
-		localVars := make(map[string]string)
-		for key, val := range managed {
-			if _, inFile := existing[key]; inFile && !placed[key] {
-				localVars[key] = val
-				placed[key] = true
-			}
-		}
-
-		localPath := envFile + ".local"
-		if len(localVars) > 0 {
-			mappings = append(mappings, EnvLocalMapping{RelPath: localPath, Vars: localVars})
-		}
-	}
-
-	// Remaining managed vars not found in any env file go into the last env file's .env.local
-	remaining := make(map[string]string)
-	for key, val := range managed {
-		if !placed[key] {
-			remaining[key] = val
-		}
-	}
-
-	if len(remaining) > 0 {
-		lastLocal := cfg.EnvFiles[len(cfg.EnvFiles)-1] + ".local"
-
-		found := false
-		for i := range mappings {
-			if mappings[i].RelPath == lastLocal {
-				for k, v := range remaining {
-					mappings[i].Vars[k] = v
-				}
-				found = true
-				break
-			}
-		}
-		if !found {
-			mappings = append(mappings, EnvLocalMapping{RelPath: lastLocal, Vars: remaining})
-		}
-	}
-
-	return mappings
 }
 
 // WriteEnvLocals writes .env.local files into the worktree.

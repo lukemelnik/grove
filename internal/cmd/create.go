@@ -115,13 +115,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		portAssignment = &ports.Assignment{Ports: map[string]int{}}
 	}
 
-	// Step 3: Create worktree with branch resolution
+	// Step 3: Resolve managed env before making any filesystem changes so a bad
+	// template fails fast instead of creating a partial worktree.
+	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch)
+	if err != nil {
+		return outputError(cmd, fmt.Errorf("resolving managed environment: %w", err))
+	}
+
+	// Step 4: Create worktree with branch resolution
 	result, err := wtMgr.Create(branch, fromRef)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
 	}
 
-	// Step 4: Output worktree details before attach so interactive users still
+	// Step 5: Output worktree details before attach so interactive users still
 	// see the workspace info before tmux takes over.
 	if jsonOutput {
 		if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
@@ -131,34 +138,35 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, err)
 	}
 
-	// Step 5: Symlink .env files and write .env.local with managed vars
-	if len(cfg.EnvFiles) > 0 {
-		if err := env.SymlinkEnvFiles(cfg.EnvFiles, projectRoot, result.Path); err != nil {
+	// Step 6: Symlink .env files and write .env.local with managed vars
+	allEnvFiles := cfg.AllEnvFiles()
+	if len(allEnvFiles) > 0 {
+		if err := env.SymlinkEnvFiles(allEnvFiles, projectRoot, result.Path); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
 		}
-		managed := env.ManagedVars(cfg, portAssignment.Ports)
-		if len(managed) > 0 {
-			mappings := env.MapManagedToEnvFiles(cfg, managed, projectRoot)
+		mappings, err := managed.EnvLocalMappings(cfg, projectRoot)
+		if err != nil {
+			return outputError(cmd, fmt.Errorf("building .env.local mappings: %w", err))
+		}
+		if len(mappings) > 0 {
 			if err := env.WriteEnvLocals(mappings, result.Path); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
 			}
 		}
 	}
 
-	// Step 6: Tmux workspace setup (default to empty config if not specified)
+	// Step 7: Tmux workspace setup (default to empty config if not specified)
 	if !noTmux {
 		tmuxCfg := cfg.Tmux
 		if tmuxCfg == nil {
 			tmuxCfg = &config.TmuxConfig{}
 		}
 
-		managed := env.ManagedVars(cfg, portAssignment.Ports)
-
 		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
 		tmuxOpts := tmux.Options{
 			Branch:       branch,
 			WorktreePath: result.Path,
-			Env:          managed,
+			Env:          managed.SessionEnv(),
 			TmuxConfig:   tmuxCfg,
 			IncludeAll:   includeAll,
 			IncludeWith:  includeWith,

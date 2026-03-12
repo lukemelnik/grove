@@ -107,8 +107,8 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	if !strings.Contains(content, "api:") {
 		t.Errorf("expected api service in config, got:\n%s", content)
 	}
-	if !strings.Contains(content, "port: 4000") {
-		t.Errorf("expected port 4000 in config, got:\n%s", content)
+	if !strings.Contains(content, "base: 4000") {
+		t.Errorf("expected base 4000 in config, got:\n%s", content)
 	}
 	if !strings.Contains(content, "env: PORT") {
 		t.Errorf("expected env PORT in config, got:\n%s", content)
@@ -116,8 +116,8 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	if !strings.Contains(content, "web:") {
 		t.Errorf("expected web service in config, got:\n%s", content)
 	}
-	if !strings.Contains(content, "port: 3000") {
-		t.Errorf("expected port 3000 in config, got:\n%s", content)
+	if !strings.Contains(content, "base: 3000") {
+		t.Errorf("expected base 3000 in config, got:\n%s", content)
 	}
 	if !strings.Contains(content, "env: WEB_PORT") {
 		t.Errorf("expected env WEB_PORT in config, got:\n%s", content)

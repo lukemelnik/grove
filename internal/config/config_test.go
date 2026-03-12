@@ -26,8 +26,9 @@ func TestParse_MinimalConfig(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 `)
 	cfg, err := Parse(yaml)
 	if err != nil {
@@ -39,11 +40,11 @@ services:
 	}
 
 	svc := cfg.Services["app"]
-	if svc.Port != 3000 {
-		t.Errorf("expected port 3000, got %d", svc.Port)
+	if svc.Port.Base != 3000 {
+		t.Errorf("expected port 3000, got %d", svc.Port.Base)
 	}
-	if svc.Env != "PORT" {
-		t.Errorf("expected env PORT, got %s", svc.Env)
+	if svc.Port.Env != "PORT" {
+		t.Errorf("expected port env PORT, got %s", svc.Port.Env)
 	}
 
 	// Default worktree_dir should be applied
@@ -63,19 +64,22 @@ worktree_dir: ../.grove-worktrees
 
 env_files:
   - .env
-  - apps/api/.env
 
 services:
   api:
-    port: 4000
-    env: PORT
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      env: PORT
+    env:
+      CORS_ORIGIN: "http://localhost:{{web.port}}"
   web:
-    port: 3000
-    env: WEB_PORT
-
-env:
-  VITE_API_URL: "http://localhost:{{api.port}}"
-  CORS_ORIGIN: "http://localhost:{{web.port}}"
+    env_file: apps/web/.env
+    port:
+      base: 3000
+      env: WEB_PORT
+    env:
+      VITE_API_URL: "http://localhost:{{api.port}}"
 
 tmux:
   mode: window
@@ -97,31 +101,40 @@ tmux:
 		t.Errorf("expected worktree_dir '../.grove-worktrees', got %s", cfg.WorktreeDir)
 	}
 
-	// Env files
-	if len(cfg.EnvFiles) != 2 {
-		t.Fatalf("expected 2 env_files, got %d", len(cfg.EnvFiles))
+	// Env files (top-level)
+	if len(cfg.EnvFiles) != 1 {
+		t.Fatalf("expected 1 top-level env_file, got %d", len(cfg.EnvFiles))
 	}
 	if cfg.EnvFiles[0] != ".env" {
 		t.Errorf("expected first env_file '.env', got %s", cfg.EnvFiles[0])
+	}
+
+	// AllEnvFiles should include service env_files
+	allEnv := cfg.AllEnvFiles()
+	if len(allEnv) != 3 {
+		t.Fatalf("expected 3 total env files, got %d: %v", len(allEnv), allEnv)
 	}
 
 	// Services
 	if len(cfg.Services) != 2 {
 		t.Fatalf("expected 2 services, got %d", len(cfg.Services))
 	}
-	if cfg.Services["api"].Port != 4000 {
-		t.Errorf("expected api port 4000, got %d", cfg.Services["api"].Port)
+	if cfg.Services["api"].Port.Base != 4000 {
+		t.Errorf("expected api port 4000, got %d", cfg.Services["api"].Port.Base)
 	}
-	if cfg.Services["web"].Env != "WEB_PORT" {
-		t.Errorf("expected web env WEB_PORT, got %s", cfg.Services["web"].Env)
+	if cfg.Services["web"].Port.Env != "WEB_PORT" {
+		t.Errorf("expected web port env WEB_PORT, got %s", cfg.Services["web"].Port.Env)
+	}
+	if cfg.Services["api"].EnvFile != "apps/api/.env" {
+		t.Errorf("expected api env_file 'apps/api/.env', got %s", cfg.Services["api"].EnvFile)
 	}
 
-	// Env vars
-	if len(cfg.Env) != 2 {
-		t.Fatalf("expected 2 env vars, got %d", len(cfg.Env))
+	// Service-level env vars
+	if cfg.Services["api"].Env["CORS_ORIGIN"] != "http://localhost:{{web.port}}" {
+		t.Errorf("unexpected CORS_ORIGIN: %s", cfg.Services["api"].Env["CORS_ORIGIN"])
 	}
-	if cfg.Env["VITE_API_URL"] != "http://localhost:{{api.port}}" {
-		t.Errorf("unexpected VITE_API_URL: %s", cfg.Env["VITE_API_URL"])
+	if cfg.Services["web"].Env["VITE_API_URL"] != "http://localhost:{{api.port}}" {
+		t.Errorf("unexpected VITE_API_URL: %s", cfg.Services["web"].Env["VITE_API_URL"])
 	}
 
 	// Tmux
@@ -163,8 +176,9 @@ func TestParse_Tier3ExplicitSplits(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   panes:
@@ -213,8 +227,9 @@ func TestParse_Tier4RawLayoutString(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   layout: "a]180x50,0,0{120x50,0,0,0,59x50,121,0[59x25,121,0,1,59x24,121,26,2]}"
@@ -238,8 +253,9 @@ func TestParse_SessionMode(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   mode: session
@@ -260,8 +276,9 @@ func TestParse_InvalidPort(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 0
-    env: PORT
+    port:
+      base: 0
+      env: PORT
 `)
 	_, err := Parse(yaml)
 	if err == nil {
@@ -273,8 +290,9 @@ func TestParse_PortTooHigh(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 70000
-    env: PORT
+    port:
+      base: 70000
+      env: PORT
 `)
 	_, err := Parse(yaml)
 	if err == nil {
@@ -282,15 +300,16 @@ services:
 	}
 }
 
-func TestParse_MissingEnvVar(t *testing.T) {
+func TestParse_MissingPortEnv(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
+    port:
+      base: 3000
 `)
 	_, err := Parse(yaml)
 	if err == nil {
-		t.Fatal("expected error for missing env var")
+		t.Fatal("expected error for missing port env var")
 	}
 }
 
@@ -298,8 +317,9 @@ func TestParse_InvalidTmuxMode(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   mode: invalid
@@ -333,8 +353,9 @@ func TestParse_CustomWorktreeDir(t *testing.T) {
 worktree_dir: /tmp/worktrees
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 `)
 	cfg, err := Parse(yaml)
 	if err != nil {
@@ -399,8 +420,11 @@ func TestDiscover_NotFound_NoGitRepo(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when not in a git repo")
 	}
-	if !strings.Contains(err.Error(), "not a git repository") {
-		t.Errorf("expected 'not a git repository' error, got: %v", err)
+	if !strings.Contains(err.Error(), "not inside a git repository") {
+		t.Errorf("expected clearer 'not inside a git repository' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "only searches for .grove.yml within the current git repo") {
+		t.Errorf("expected search-scope hint, got: %v", err)
 	}
 }
 
@@ -411,8 +435,11 @@ func TestDiscover_NotFound_GitRepoNoConfig(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when no config found")
 	}
-	if !strings.Contains(err.Error(), "no .grove.yml found") {
-		t.Errorf("expected 'no .grove.yml found' error, got: %v", err)
+	if !strings.Contains(err.Error(), "git repository found at") {
+		t.Errorf("expected repo-found context in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "but no .grove.yml was found") {
+		t.Errorf("expected clearer 'no .grove.yml' error, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "grove init") {
 		t.Errorf("expected hint about 'grove init', got: %v", err)
@@ -426,8 +453,9 @@ func TestLoad_ValidFile(t *testing.T) {
 	content := []byte(`
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `)
 	if err := os.WriteFile(configPath, content, 0644); err != nil {
 		t.Fatal(err)
@@ -438,8 +466,8 @@ services:
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if cfg.Services["api"].Port != 4000 {
-		t.Errorf("expected port 4000, got %d", cfg.Services["api"].Port)
+	if cfg.Services["api"].Port.Base != 4000 {
+		t.Errorf("expected port 4000, got %d", cfg.Services["api"].Port.Base)
 	}
 }
 
@@ -468,17 +496,21 @@ func TestParse_MicroservicesConfig(t *testing.T) {
 	yaml := []byte(`
 services:
   gateway:
-    port: 8080
-    env: GATEWAY_PORT
+    port:
+      base: 8080
+      env: GATEWAY_PORT
   users:
-    port: 8081
-    env: USERS_PORT
+    port:
+      base: 8081
+      env: USERS_PORT
   billing:
-    port: 8082
-    env: BILLING_PORT
+    port:
+      base: 8082
+      env: BILLING_PORT
   frontend:
-    port: 3000
-    env: FRONTEND_PORT
+    port:
+      base: 3000
+      env: FRONTEND_PORT
 
 env:
   API_URL: "http://localhost:{{gateway.port}}"
@@ -530,11 +562,13 @@ func TestParse_DuplicateEnvVarName(t *testing.T) {
 	yaml := []byte(`
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
   web:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 `)
 	_, err := Parse(yaml)
 	if err == nil {
@@ -562,8 +596,9 @@ func TestParse_PaneWithName(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   panes:
@@ -602,8 +637,9 @@ func TestParse_InvalidSplitDirection(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   panes:
@@ -622,8 +658,9 @@ func TestParse_NestedSplitsDeep(t *testing.T) {
 	yaml := []byte(`
 services:
   app:
-    port: 3000
-    env: PORT
+    port:
+      base: 3000
+      env: PORT
 
 tmux:
   panes:
@@ -776,8 +813,9 @@ func TestParse_BlockedBasePort(t *testing.T) {
 	yaml := []byte(`
 services:
   api:
-    port: 6000
-    env: PORT
+    port:
+      base: 6000
+      env: PORT
 `)
 	_, err := Parse(yaml)
 	if err == nil {
@@ -828,6 +866,25 @@ env_files:
 	}
 	if len(cfg.EnvFiles) != 2 {
 		t.Errorf("expected 2 env_files, got %d", len(cfg.EnvFiles))
+	}
+}
+
+func TestParse_ServiceEnvRequiresEnvFile(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+    env:
+      API_URL: "http://localhost:{{api.port}}"
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error when service env is configured without env_file")
+	}
+	if !strings.Contains(err.Error(), "env requires env_file") {
+		t.Errorf("expected env_file validation error, got: %v", err)
 	}
 }
 

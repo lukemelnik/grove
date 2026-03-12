@@ -19,8 +19,9 @@ func TestDeleteCmd_Basic(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -80,8 +81,9 @@ func TestDeleteCmd_KeepBranch(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -142,8 +144,9 @@ func TestDeleteCmd_OpenPR_Aborts(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -201,8 +204,9 @@ func TestDeleteCmd_OpenPR_Force(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -262,8 +266,9 @@ func TestDeleteCmd_GhNotAvailable(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -331,8 +336,9 @@ func TestDeleteCmd_UnpushedBranch_Blocks(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
@@ -386,8 +392,9 @@ func TestDeleteCmd_UnpushedBranch_ForceOverrides(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + `
 services:
   api:
-    port: 4000
-    env: PORT
+    port:
+      base: 4000
+      env: PORT
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
