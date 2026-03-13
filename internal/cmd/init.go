@@ -36,6 +36,9 @@ Non-interactive examples:
 Service format:  name:port:ENV_VAR
 Pane format:     command[:name[:optional]]
 
+If --worktree-dir is omitted, Grove defaults to ../.grove-worktrees/<repo-name>.
+Set it only when you want a different location.
+
 The --pane flag only creates a flat pane list. For nested tmux split layouts,
 edit the generated .grove.yml (or start from 'grove schema').
 
@@ -66,7 +69,7 @@ Run 'grove schema' to see the full .grove.yml configuration reference.`,
 	cmd.Flags().StringArray("service", nil, `add a service (format: name:port:ENV_VAR, repeatable)`)
 	cmd.Flags().StringArray("env-file", nil, "add an env file path (repeatable)")
 	cmd.Flags().StringArray("pane", nil, `add a tmux pane (format: command[:name[:optional]], repeatable)`)
-	cmd.Flags().String("worktree-dir", "", "worktree directory (default: ../.grove-worktrees)")
+	cmd.Flags().String("worktree-dir", "", "worktree directory override (default when omitted: ../.grove-worktrees/<repo-name>)")
 	cmd.Flags().String("tmux-mode", "", `tmux mode: "window" or "session"`)
 	cmd.Flags().String("tmux-layout", "", "tmux layout preset or raw string")
 	cmd.Flags().StringArray("env", nil, "add an env var (format: KEY=VALUE or KEY={{service.port}}, repeatable)")
@@ -111,11 +114,9 @@ func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []strin
 
 	cfg := config.Config{}
 
-	// Worktree dir
+	// Worktree dir override
 	if wtDir != "" {
 		cfg.WorktreeDir = wtDir
-	} else {
-		cfg.WorktreeDir = "../.grove-worktrees"
 	}
 
 	// Env files
@@ -205,12 +206,12 @@ func runInitInteractive(cmd *cobra.Command, force bool) error {
 	cfg := config.Config{}
 
 	// --- Worktree directory ---
-	fmt.Fprintf(w, "\nWorktree directory (relative to project root) [../.grove-worktrees]: ")
+	defaultWorktreeDir := config.DefaultWorktreeDir(cwd)
+	fmt.Fprintf(w, "\nWorktree directory override (relative to project root, leave empty for default %s): ", defaultWorktreeDir)
 	wtDir := scanLine(scanner)
-	if wtDir == "" {
-		wtDir = "../.grove-worktrees"
+	if wtDir != "" && filepath.Clean(wtDir) != filepath.Clean(defaultWorktreeDir) {
+		cfg.WorktreeDir = wtDir
 	}
-	cfg.WorktreeDir = wtDir
 
 	// --- Env files ---
 	fmt.Fprintf(w, "\nEnv files to include (comma or space separated, e.g. .env apps/api/.env) [.env]: ")
@@ -363,7 +364,21 @@ func writeConfig(cmd *cobra.Command, configPath string, cfg *config.Config) erro
 		return fmt.Errorf("writing %s: %w", config.ConfigFileName, err)
 	}
 
+	projectRoot := filepath.Dir(configPath)
+	effective := *cfg
+	effective.ApplyProjectDefaults(projectRoot)
+	resolvedWorktreeDir := effective.WorktreeDir
+	if !filepath.IsAbs(resolvedWorktreeDir) {
+		resolvedWorktreeDir = filepath.Join(projectRoot, resolvedWorktreeDir)
+	}
+	resolvedWorktreeDir = filepath.Clean(resolvedWorktreeDir)
+
 	fmt.Fprintf(cmd.OutOrStdout(), "Wrote %s\n", configPath)
+	if cfg.WorktreeDir == "" {
+		fmt.Fprintf(cmd.OutOrStdout(), "Default worktree base dir: %s\n", resolvedWorktreeDir)
+	} else {
+		fmt.Fprintf(cmd.OutOrStdout(), "Worktree base dir: %s\n", resolvedWorktreeDir)
+	}
 	return nil
 }
 

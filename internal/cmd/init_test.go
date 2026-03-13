@@ -95,8 +95,8 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	content := string(data)
 
 	// Verify content contains expected sections
-	if !strings.Contains(content, "worktree_dir: ../.grove-worktrees") {
-		t.Errorf("expected worktree_dir in config, got:\n%s", content)
+	if strings.Contains(content, "worktree_dir:") {
+		t.Errorf("expected default worktree_dir to be omitted from config, got:\n%s", content)
 	}
 	if !strings.Contains(content, "env_files:") {
 		t.Errorf("expected env_files in config, got:\n%s", content)
@@ -144,18 +144,24 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 		t.Errorf("expected optional pane in config, got:\n%s", content)
 	}
 
-	// Verify output mentions the file was written
+	// Verify output mentions the file was written and shows the resolved default worktree dir.
 	if !strings.Contains(buf.String(), "Wrote") {
 		t.Errorf("output should mention writing the file, got:\n%s", buf.String())
 	}
-
-	// Verify the generated YAML round-trips through config.Parse
-	parsed, err := config.Parse(data)
-	if err != nil {
-		t.Fatalf("generated .grove.yml failed to parse: %v\nContent:\n%s", err, content)
+	wantResolvedWorktreeBaseDir := filepath.Clean(filepath.Join(tmpDir, "..", ".grove-worktrees", filepath.Base(tmpDir)))
+	if !strings.Contains(buf.String(), "Default worktree base dir: "+wantResolvedWorktreeBaseDir) {
+		t.Errorf("output should mention resolved default worktree dir, got:\n%s", buf.String())
 	}
-	if parsed.WorktreeDir != "../.grove-worktrees" {
-		t.Errorf("parsed WorktreeDir = %q, want %q", parsed.WorktreeDir, "../.grove-worktrees")
+
+	// Verify the generated YAML round-trips through config.Load so project-derived
+	// defaults (like worktree_dir) are applied.
+	parsed, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("generated .grove.yml failed to load: %v\nContent:\n%s", err, content)
+	}
+	wantWorktreeDir := filepath.Join("..", ".grove-worktrees", filepath.Base(tmpDir))
+	if parsed.WorktreeDir != wantWorktreeDir {
+		t.Errorf("parsed WorktreeDir = %q, want %q", parsed.WorktreeDir, wantWorktreeDir)
 	}
 	if len(parsed.Services) != 2 {
 		t.Errorf("parsed %d services, want 2", len(parsed.Services))
@@ -210,9 +216,22 @@ func TestInitCmd_MinimalConfig(t *testing.T) {
 
 	content := string(data)
 
-	// Should have worktree_dir
-	if !strings.Contains(content, "worktree_dir: ../.grove-worktrees") {
-		t.Errorf("expected worktree_dir in config, got:\n%s", content)
+	// Default worktree_dir should be omitted from the file.
+	if strings.Contains(content, "worktree_dir:") {
+		t.Errorf("expected default worktree_dir to be omitted from config, got:\n%s", content)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load generated .grove.yml: %v\nContent:\n%s", err, content)
+	}
+	wantWorktreeDir := filepath.Join("..", ".grove-worktrees", filepath.Base(tmpDir))
+	if loaded.WorktreeDir != wantWorktreeDir {
+		t.Errorf("loaded WorktreeDir = %q, want %q", loaded.WorktreeDir, wantWorktreeDir)
+	}
+	wantResolvedWorktreeBaseDir := filepath.Clean(filepath.Join(tmpDir, wantWorktreeDir))
+	if !strings.Contains(buf.String(), "Default worktree base dir: "+wantResolvedWorktreeBaseDir) {
+		t.Errorf("output should mention resolved default worktree dir, got:\n%s", buf.String())
 	}
 
 	// Should NOT have services or tmux
@@ -221,6 +240,48 @@ func TestInitCmd_MinimalConfig(t *testing.T) {
 	}
 	if strings.Contains(content, "tmux:") {
 		t.Errorf("expected no tmux section in minimal config, got:\n%s", content)
+	}
+}
+
+func TestInitCmd_CustomWorktreeDirOverride(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return tmpDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"init", "--worktree-dir", "../custom-worktrees/project-x"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("init command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	configPath := filepath.Join(tmpDir, ".grove.yml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("failed to read .grove.yml: %v", err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, "worktree_dir: ../custom-worktrees/project-x") {
+		t.Errorf("expected custom worktree_dir override in config, got:\n%s", content)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("failed to load generated .grove.yml: %v", err)
+	}
+	if loaded.WorktreeDir != "../custom-worktrees/project-x" {
+		t.Errorf("loaded WorktreeDir = %q, want %q", loaded.WorktreeDir, "../custom-worktrees/project-x")
+	}
+	wantResolvedWorktreeBaseDir := filepath.Clean(filepath.Join(tmpDir, "..", "custom-worktrees", "project-x"))
+	if !strings.Contains(buf.String(), "Worktree base dir: "+wantResolvedWorktreeBaseDir) {
+		t.Errorf("output should mention resolved custom worktree dir, got:\n%s", buf.String())
 	}
 }
 

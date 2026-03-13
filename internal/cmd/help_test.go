@@ -26,6 +26,9 @@ func TestRootHelp_IncludesTmuxLayoutDiscoveryHints(t *testing.T) {
 	output := executeCommandForHelp(t, "--help")
 
 	for _, want := range []string{
+		"Config defaults:",
+		"worktree_dir is optional; if omitted Grove uses ../.grove-worktrees/<repo-name>",
+		"Set worktree_dir only when you want a different location",
 		"Tmux layout quick rules for .grove.yml:",
 		"split: horizontal => children go left-to-right",
 		"split: vertical   => children go top-to-bottom",
@@ -64,6 +67,8 @@ func TestInitHelp_ExplainsFlatPaneFlagAndNestedLayouts(t *testing.T) {
 	output := executeCommandForHelp(t, "init", "--help")
 
 	for _, want := range []string{
+		"If --worktree-dir is omitted, Grove defaults to ../.grove-worktrees/<repo-name>.",
+		"Set it only when you want a different location.",
 		"The --pane flag only creates a flat pane list.",
 		"edit the generated .grove.yml (or start from 'grove schema').",
 		"split: horizontal => children go left-to-right",
@@ -80,6 +85,8 @@ func TestSchemaOutput_IncludesTmuxSplitExample(t *testing.T) {
 	output := executeCommandForHelp(t, "schema")
 
 	for _, want := range []string{
+		"# Default when omitted: \"../.grove-worktrees/<repo-name>\"",
+		"# worktree_dir: ../.grove-worktrees/shared",
 		"# Split form — nested pane layout (Tier 3):",
 		"#   split: horizontal => children go left-to-right",
 		"#   split: vertical   => children go top-to-bottom",

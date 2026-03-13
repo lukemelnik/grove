@@ -47,9 +47,9 @@ services:
 		t.Errorf("expected port env PORT, got %s", svc.Port.Env)
 	}
 
-	// Default worktree_dir should be applied
-	if cfg.WorktreeDir != "../.grove-worktrees" {
-		t.Errorf("expected default worktree_dir, got %s", cfg.WorktreeDir)
+	// Parse preserves omission; project-derived defaults are applied by Load.
+	if cfg.WorktreeDir != "" {
+		t.Errorf("expected omitted worktree_dir to stay empty after Parse, got %s", cfg.WorktreeDir)
 	}
 
 	// No tmux config
@@ -339,9 +339,9 @@ func TestParse_EmptyConfig(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Should get defaults
-	if cfg.WorktreeDir != "../.grove-worktrees" {
-		t.Errorf("expected default worktree_dir, got %s", cfg.WorktreeDir)
+	// Parse preserves omission; project-derived defaults are applied by Load.
+	if cfg.WorktreeDir != "" {
+		t.Errorf("expected omitted worktree_dir to stay empty after Parse, got %s", cfg.WorktreeDir)
 	}
 	if cfg.Services != nil {
 		t.Errorf("expected nil services, got %v", cfg.Services)
@@ -446,6 +446,14 @@ func TestDiscover_NotFound_GitRepoNoConfig(t *testing.T) {
 	}
 }
 
+func TestDefaultWorktreeDir(t *testing.T) {
+	got := DefaultWorktreeDir("/home/user/project-a")
+	want := filepath.Join("..", ".grove-worktrees", "project-a")
+	if got != want {
+		t.Fatalf("DefaultWorktreeDir() = %q, want %q", got, want)
+	}
+}
+
 func TestLoad_ValidFile(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, ConfigFileName)
@@ -468,6 +476,11 @@ services:
 
 	if cfg.Services["api"].Port.Base != 4000 {
 		t.Errorf("expected port 4000, got %d", cfg.Services["api"].Port.Base)
+	}
+
+	wantWorktreeDir := filepath.Join("..", ".grove-worktrees", filepath.Base(dir))
+	if cfg.WorktreeDir != wantWorktreeDir {
+		t.Errorf("expected derived worktree_dir %q, got %q", wantWorktreeDir, cfg.WorktreeDir)
 	}
 }
 

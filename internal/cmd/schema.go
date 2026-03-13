@@ -11,9 +11,11 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 # Place this file in your project root. Grove discovers it automatically,
 # even from inside a worktree.
 
-# Where worktrees are created (relative to project root).
-# Default: "../.grove-worktrees"
-worktree_dir: ../.grove-worktrees
+# Optional override for where worktrees are created (relative to project root).
+# Default when omitted: "../.grove-worktrees/<repo-name>"
+# Set this only when you want a different location.
+# Example override:
+# worktree_dir: ../.grove-worktrees/shared
 
 # Env files to symlink from the main repo (for files not tied to a service).
 # Paths must be relative to the project root and cannot escape it.

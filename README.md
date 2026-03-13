@@ -67,6 +67,8 @@ grove clean              # Remove worktrees for merged/deleted branches
 
 Grove is configured via `.grove.yml` in your project root.
 
+`worktree_dir` is optional. If you omit it, Grove defaults to `../.grove-worktrees/<repo-name>`. Only set it when you want a different location.
+
 ### Minimal
 
 ```yaml
@@ -80,8 +82,6 @@ services:
 ### Full Example
 
 ```yaml
-worktree_dir: ../.grove-worktrees
-
 env_files:
   - .env
 
@@ -120,7 +120,7 @@ tmux:
 
 | Field | Default | Description |
 |-------|---------|-------------|
-| `worktree_dir` | `../.grove-worktrees` | Where worktrees are created (relative to project root) |
+| `worktree_dir` | `../.grove-worktrees/<repo-name>` | Optional override for where worktrees are created (relative to project root) |
 | `env_files` | — | Env files to symlink (for files not tied to a service) |
 | `services` | — | Services with ports, env files, and env vars |
 | `services.<name>.port.base` | — | Base port number (1-65535) |
@@ -153,6 +153,7 @@ grove init --service api:4000:PORT --service web:3000:WEB_PORT \
 ```
 
 Service format: `name:port:ENV_VAR`. Pane format: `command[:name[:optional]]`.
+If you omit `worktree_dir`, Grove defaults to `../.grove-worktrees/<repo-name>`. Use `--worktree-dir` only to override that location.
 
 ### `grove create <branch>`
 
@@ -216,13 +217,13 @@ grove list
 
 ```
 Branch:   feat/auth
-Worktree: /path/to/.grove-worktrees/feat-auth
+Worktree: /path/to/.grove-worktrees/my-project/feat-auth
 Ports:
   api: 4045
   web: 3045
 
 Branch:   feat/billing
-Worktree: /path/to/.grove-worktrees/feat-billing
+Worktree: /path/to/.grove-worktrees/my-project/feat-billing
 Ports:
   api: 4092
   web: 3092
@@ -258,7 +259,7 @@ grove status
 
 ```
 Branch:   feat/auth
-Worktree: /path/to/.grove-worktrees/feat-auth
+Worktree: /path/to/.grove-worktrees/my-project/feat-auth
 Ports:
   api: 4045
   web: 3045

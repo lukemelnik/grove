@@ -29,6 +29,10 @@ Key commands:
   grove list           List active worktrees and ports
   grove clean          Remove stale worktrees
 
+Config defaults:
+  worktree_dir is optional; if omitted Grove uses ../.grove-worktrees/<repo-name>
+  Set worktree_dir only when you want a different location
+
 Tmux layout quick rules for .grove.yml:
   split: horizontal => children go left-to-right
   split: vertical   => children go top-to-bottom

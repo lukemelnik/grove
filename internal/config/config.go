@@ -39,8 +39,9 @@ func IsPortBlocked(port int) bool {
 
 // Config represents the top-level .grove.yml configuration.
 type Config struct {
-	// WorktreeDir is where worktrees are created, relative to the project root.
-	// Defaults to "../.grove-worktrees".
+	// WorktreeDir optionally overrides where worktrees are created, relative to
+	// the project root. When omitted, Grove derives a default of
+	// "../.grove-worktrees/<repo-name>".
 	WorktreeDir string `yaml:"worktree_dir,omitempty"`
 
 	// EnvFiles lists .env files to read (all vars pass through automatically).
@@ -167,10 +168,27 @@ func (p *Pane) UnmarshalYAML(value *yaml.Node) error {
 	return fmt.Errorf("pane must be a string or a map, got %v", value.Kind)
 }
 
-// DefaultConfig returns a Config with default values applied.
+// DefaultConfig returns a Config with static defaults applied.
+// Project-derived defaults (like worktree_dir) are applied later when the
+// project root is known.
 func DefaultConfig() Config {
-	return Config{
-		WorktreeDir: "../.grove-worktrees",
+	return Config{}
+}
+
+// DefaultWorktreeDir returns the derived default worktree directory for a
+// project root: ../.grove-worktrees/<repo-name>.
+func DefaultWorktreeDir(projectRoot string) string {
+	repoName := filepath.Base(filepath.Clean(projectRoot))
+	if repoName == "" || repoName == "." || repoName == string(filepath.Separator) {
+		repoName = "repo"
+	}
+	return filepath.Join("..", ".grove-worktrees", repoName)
+}
+
+// ApplyProjectDefaults fills in defaults that depend on the project root.
+func (cfg *Config) ApplyProjectDefaults(projectRoot string) {
+	if cfg.WorktreeDir == "" {
+		cfg.WorktreeDir = DefaultWorktreeDir(projectRoot)
 	}
 }
 
@@ -180,7 +198,12 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
-	return Parse(data)
+	cfg, err := Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyProjectDefaults(filepath.Dir(path))
+	return cfg, nil
 }
 
 // Parse parses raw YAML bytes into a Config.
