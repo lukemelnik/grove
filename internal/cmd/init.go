@@ -36,6 +36,28 @@ Non-interactive examples:
 Service format:  name:port:ENV_VAR
 Pane format:     command[:name[:optional]]
 
+The --pane flag only creates a flat pane list. For nested tmux split layouts,
+edit the generated .grove.yml (or start from 'grove schema').
+
+Tmux explicit split rules in .grove.yml:
+  split: horizontal => children go left-to-right
+  split: vertical   => children go top-to-bottom
+  Child order matters: first child is left/top, second is right/bottom.
+  size applies along the split axis (width for horizontal, height for vertical).
+
+  Example: two side-by-side pi panes with a small full-width terminal on the bottom:
+    tmux:
+      panes:
+        - split: vertical
+          panes:
+            - split: horizontal
+              panes:
+                - pi
+                - pi
+            - cmd: ""
+              name: terminal
+              size: "20%"
+
 Run 'grove schema' to see the full .grove.yml configuration reference.`,
 		Args: cobra.NoArgs,
 		RunE: runInit,

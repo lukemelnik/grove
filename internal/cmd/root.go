@@ -24,10 +24,22 @@ optionally a full tmux workspace.
 Key commands:
   grove init           Create .grove.yml interactively or via flags
   grove init --service api:4000:PORT --pane nvim   (non-interactive)
-  grove schema         Print the full annotated .grove.yml reference
+  grove schema         Print the full .grove.yml reference, including tmux split examples
   grove create <branch>  Create worktree + workspace
   grove list           List active worktrees and ports
-  grove clean          Remove stale worktrees`,
+  grove clean          Remove stale worktrees
+
+Tmux layout quick rules for .grove.yml:
+  split: horizontal => children go left-to-right
+  split: vertical   => children go top-to-bottom
+  Child order: first child is left/top, second is right/bottom
+  Full-width pane on the bottom/top => outer split should be vertical
+  Full-height pane on the left/right => outer split should be horizontal
+
+Need help translating a pane layout into .grove.yml?
+  grove create --help  Tmux split direction rules + nested layout example
+  grove init --help    Notes on flat --pane flags vs nested YAML layouts
+  grove schema         Full annotated config reference with tmux examples`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

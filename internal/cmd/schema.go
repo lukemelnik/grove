@@ -99,11 +99,22 @@ tmux:
   #     setup: pnpm install  # runs before cmd (always executes, even if autorun: false)
   #
   # Split form — nested pane layout (Tier 3):
-  #   - split: vertical    # or "horizontal"
-  #     size: "30%"
+  #   split: horizontal => children go left-to-right
+  #   split: vertical   => children go top-to-bottom
+  #   Child order matters: first child is left/top, second is right/bottom.
+  #   size applies along the split axis: width for horizontal, height for vertical.
+  #   To subdivide only one region further, nest another split inside that child.
+  #
+  # Example: two side-by-side pi panes with a small full-width terminal on the bottom:
+  #   - split: vertical
   #     panes:
-  #       - cmd: logs
-  #       - cmd: tests
+  #       - split: horizontal
+  #         panes:
+  #           - pi
+  #           - pi
+  #       - cmd: ""
+  #         name: terminal
+  #         size: "20%"
   panes:
     - nvim
     - cmd: claude

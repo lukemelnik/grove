@@ -47,6 +47,26 @@ Optional panes:
           name: dev
           optional: true
 
+Tmux explicit split rules in .grove.yml:
+  split: horizontal => children go left-to-right
+  split: vertical   => children go top-to-bottom
+  Child order matters: first child is left/top, second is right/bottom.
+  size applies along the split axis (width for horizontal, height for vertical).
+  To subdivide only one region further, nest another split inside that child.
+
+  Example: two side-by-side pi panes with a small full-width terminal on the bottom:
+    tmux:
+      panes:
+        - split: vertical
+          panes:
+            - split: horizontal
+              panes:
+                - pi
+                - pi
+            - cmd: ""
+              name: terminal
+              size: "20%"
+
 Run 'grove schema' for the full .grove.yml configuration reference.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runCreate,

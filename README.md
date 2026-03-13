@@ -361,6 +361,12 @@ tmux:
 
 Define the exact split structure with nested containers.
 
+- `split: horizontal` arranges children left-to-right
+- `split: vertical` arranges children top-to-bottom
+- Child order matters: first child is left/top, second is right/bottom
+- `size` applies along the split axis: width for `horizontal`, height for `vertical`
+- To subdivide only one region further, nest another `split` inside that child
+
 ```yaml
 tmux:
   panes:
@@ -371,6 +377,22 @@ tmux:
         - cmd: claude
           size: "60%"
         - cmd: pnpm dev
+```
+
+Example: two side-by-side `pi` panes with a small full-width terminal on the bottom.
+
+```yaml
+tmux:
+  panes:
+    - split: vertical
+      panes:
+        - split: horizontal
+          panes:
+            - pi
+            - pi
+        - cmd: ""
+          name: terminal
+          size: "20%"
 ```
 
 ### Raw Layout String
