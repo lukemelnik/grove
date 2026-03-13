@@ -525,12 +525,40 @@ func TestFindStaleWorktrees_SkipsGoneBranchesWithUniqueCommits(t *testing.T) {
 	git.On("rev-list --count main..feat/gone", "1", nil)
 
 	mgr := worktree.NewManager(git, "/project", "/worktrees")
-	stale, err := findStaleWorktrees(mgr)
+	stale, err := findStaleWorktrees(mgr, false)
 	if err != nil {
 		t.Fatalf("findStaleWorktrees failed: %v", err)
 	}
 	if len(stale) != 0 {
 		t.Fatalf("expected gone branch with unique commits to be skipped, got: %+v", stale)
+	}
+}
+
+func TestFindStaleWorktrees_IncludesGoneBranchesWithUniqueCommitsWhenAllEnabled(t *testing.T) {
+	git := newCleanMockGitRunner()
+	git.On("worktree list --porcelain",
+		"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
+			"worktree /worktrees/feat-gone\nHEAD def\nbranch refs/heads/feat/gone\n", nil)
+	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
+	git.On("branch -vv",
+		"  feat/gone def5678 [origin/feat/gone: gone] local only\n"+
+			"* main 111aaaa [origin/main] latest\n", nil)
+	git.On("branch --merged main", "* main\n", nil)
+	git.On("rev-list --count main..feat/gone", "2", nil)
+
+	mgr := worktree.NewManager(git, "/project", "/worktrees")
+	stale, err := findStaleWorktrees(mgr, true)
+	if err != nil {
+		t.Fatalf("findStaleWorktrees failed: %v", err)
+	}
+	if len(stale) != 1 {
+		t.Fatalf("expected one gone-unique worktree, got: %+v", stale)
+	}
+	if stale[0].Branch != "feat/gone" {
+		t.Fatalf("expected branch feat/gone, got %+v", stale[0])
+	}
+	if stale[0].Reason != "gone-unique" {
+		t.Fatalf("expected reason gone-unique, got %+v", stale[0])
 	}
 }
 

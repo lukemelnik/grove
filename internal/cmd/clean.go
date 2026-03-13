@@ -29,19 +29,19 @@ type cleanOutput struct {
 func newCleanCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "clean",
-		Short: "Remove worktrees for stale (gone or merged) branches",
+		Short: "Remove worktrees for stale branches",
 		Long: `Find and remove worktrees whose branches are stale:
 
   - Gone branches: local branches whose remote tracking branch was deleted
-    (typically after merging a PR). This is the most reliable detection
-    method and works regardless of merge strategy (merge, squash, or rebase).
-    Enable "Automatically delete head branches" in your GitHub repo settings
-    to ensure remote branches are cleaned up after merging.
+    and that no longer have unique commits beyond the default branch.
   - Merged branches: branches fully merged into the main/master branch
     (detected via git branch --merged). Note: this only catches regular
     merges and fast-forwards, not squash or rebase merges.
   - Unchanged branches: branches with no unique commits beyond the default
     branch — created but never worked on.
+  - With --all: also include gone branches that still have unique commits.
+    This is useful for squash/rebase merge workflows after the remote branch
+    has been deleted, but remote deletion alone is not proof of safe cleanup.
 
 For each stale worktree, the associated tmux session/window is killed,
 the git worktree is removed, and the local branch is deleted.`,
@@ -51,6 +51,7 @@ the git worktree is removed, and the local branch is deleted.`,
 
 	cmd.Flags().Bool("dry-run", false, "show what would be cleaned without doing it")
 	cmd.Flags().Bool("force", false, "skip confirmation prompt")
+	cmd.Flags().Bool("all", false, "also include gone branches that still have unique commits")
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 
 	return cmd
@@ -59,6 +60,7 @@ the git worktree is removed, and the local branch is deleted.`,
 func runClean(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
+	includeAll, _ := cmd.Flags().GetBool("all")
 	jsonOutput := shouldOutputJSON(cmd)
 
 	// Step 1: Discover and load config
@@ -82,7 +84,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
 
 	// Step 3: Find stale branches
-	stale, err := findStaleWorktrees(wtMgr)
+	stale, err := findStaleWorktrees(wtMgr, includeAll)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("finding stale worktrees: %w", err))
 	}
@@ -178,8 +180,8 @@ func runClean(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// findStaleWorktrees finds worktrees whose branches are gone or merged.
-func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
+// findStaleWorktrees finds worktrees whose branches are stale.
+func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]staleWorktree, error) {
 	// Get all worktrees
 	worktrees, err := wtMgr.List()
 	if err != nil {
@@ -211,18 +213,6 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 		mergedBranches = nil
 	}
 
-	// Build the merged set for quick lookup
-	mergedSet := make(map[string]bool)
-	for _, b := range mergedBranches {
-		mergedSet[b] = true
-	}
-
-	// Build the gone set
-	goneSet := make(map[string]bool)
-	for _, b := range goneBranches {
-		goneSet[b] = true
-	}
-
 	// Collect stale worktrees (only those that have an active worktree)
 	seen := make(map[string]bool)
 	var stale []staleWorktree
@@ -240,13 +230,20 @@ func findStaleWorktrees(wtMgr *worktree.Manager) ([]staleWorktree, error) {
 			continue
 		}
 		hasUnique, err := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
-		if err != nil || hasUnique {
+		if err != nil {
 			continue
+		}
+		reason := "gone"
+		if hasUnique {
+			if !includeGoneUnique {
+				continue
+			}
+			reason = "gone-unique"
 		}
 		seen[branch] = true
 		stale = append(stale, staleWorktree{
 			Branch:   branch,
-			Reason:   "gone",
+			Reason:   reason,
 			Worktree: path,
 		})
 	}
