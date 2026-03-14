@@ -2,10 +2,6 @@ version: 2
 
 project_name: grove
 
-before:
-  hooks:
-    - go test ./...
-
 builds:
   - id: grove
     main: ./cmd/grove

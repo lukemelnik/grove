@@ -80,10 +80,19 @@ services:
 	getWorkingDir = func() (string, error) { return repoDir, nil }
 	defer func() { getWorkingDir = origGetWd }()
 
-	// Use a mock tmux runner that does nothing
+	// Default tmux mode is window, so simulate running inside tmux.
+	mock := &recordingTmuxRunner{
+		hasSessionResult: false,
+		hasWindowResult:  false,
+		currentSession:   "test-session",
+	}
 	origFactory := tmuxRunnerFactory
-	tmuxRunnerFactory = func() tmux.Runner { return &noopTmuxRunner{} }
+	tmuxRunnerFactory = func() tmux.Runner { return mock }
 	defer func() { tmuxRunnerFactory = origFactory }()
+
+	origTmux := os.Getenv("TMUX")
+	os.Setenv("TMUX", "test")
+	defer os.Setenv("TMUX", origTmux)
 
 	rootCmd := NewRootCmd()
 	var buf bytes.Buffer
@@ -253,6 +262,9 @@ tmux:
 type noopTmuxRunner struct{}
 
 func (r *noopTmuxRunner) Run(args ...string) (string, error) {
+	if len(args) >= 3 && args[0] == "display-message" && args[1] == "-p" && args[len(args)-1] == "#{session_name}" {
+		return "test-session", nil
+	}
 	return "", nil
 }
 
@@ -261,6 +273,7 @@ type recordingTmuxRunner struct {
 	commands         [][]string
 	hasSessionResult bool
 	hasWindowResult  bool
+	currentSession   string
 }
 
 func (r *recordingTmuxRunner) Run(args ...string) (string, error) {
@@ -275,6 +288,10 @@ func (r *recordingTmuxRunner) Run(args ...string) (string, error) {
 		case "list-windows":
 			if !r.hasWindowResult {
 				return "", exec.ErrNotFound
+			}
+		case "display-message":
+			if len(args) >= 3 && args[1] == "-p" && args[len(args)-1] == "#{session_name}" {
+				return r.currentSession, nil
 			}
 		}
 	}

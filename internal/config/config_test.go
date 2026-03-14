@@ -12,6 +12,8 @@ func initGitRepo(t *testing.T, dir string) {
 	t.Helper()
 	for _, args := range [][]string{
 		{"init"},
+		{"config", "user.email", "test@grove.test"},
+		{"config", "user.name", "Grove Test"},
 		{"commit", "--allow-empty", "-m", "init"},
 	} {
 		cmd := exec.Command("git", args...)
