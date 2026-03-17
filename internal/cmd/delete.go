@@ -64,7 +64,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadNoValidate(configPath)
 	if err != nil {
 		return err
 	}

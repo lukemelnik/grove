@@ -74,7 +74,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, err)
 	}
 
-	cfg, err := config.Load(configPath)
+	cfg, err := config.LoadNoValidate(configPath)
 	if err != nil {
 		return outputError(cmd, err)
 	}

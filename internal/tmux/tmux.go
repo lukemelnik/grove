@@ -274,7 +274,11 @@ func (m *Manager) createSession(name, workdir string) error {
 }
 
 // createWindow creates a new window in the given session.
+// If a window with the same name already exists, it is reused instead.
 func (m *Manager) createWindow(session, name, workdir string) error {
+	if m.HasWindow(name) {
+		return nil
+	}
 	_, err := m.runner.Run("new-window", "-t", session, "-n", name, "-c", workdir)
 	return err
 }

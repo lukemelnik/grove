@@ -206,6 +206,21 @@ func Load(path string) (*Config, error) {
 	return cfg, nil
 }
 
+// LoadNoValidate reads and parses a .grove.yml file without running validation.
+// Use this for operations (like delete) that don't need fully valid service config.
+func LoadNoValidate(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading config file: %w", err)
+	}
+	cfg := DefaultConfig()
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.ApplyProjectDefaults(filepath.Dir(path))
+	return &cfg, nil
+}
+
 // Parse parses raw YAML bytes into a Config.
 func Parse(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
