@@ -75,8 +75,8 @@ Grove is configured via `.grove.yml` in your project root.
 services:
   app:
     port:
-      base: 3000
-      env: PORT
+      base: 3000        # starting port — main branch uses this directly, others get an offset
+      var: PORT          # env var name that receives the computed port
 ```
 
 ### Full Example
@@ -90,14 +90,14 @@ services:
     env_file: apps/api/.env
     port:
       base: 4000
-      env: PORT
+      var: PORT
     env:
       CORS_ORIGIN: "http://localhost:{{web.port}}"
   web:
     env_file: apps/web/.env
     port:
       base: 3000
-      env: WEB_PORT
+      var: WEB_PORT
     env:
       VITE_API_URL: "http://localhost:{{api.port}}"
       VITE_APP_URL: "http://localhost:{{web.port}}"
@@ -123,8 +123,8 @@ tmux:
 | `worktree_dir` | `../.grove-worktrees/<repo-name>` | Optional override for where worktrees are created (relative to project root) |
 | `env_files` | — | Env files to symlink (for files not tied to a service) |
 | `services` | — | Services with ports, env files, and env vars |
-| `services.<name>.port.base` | — | Base port number (1-65535) |
-| `services.<name>.port.env` | — | Env var name for the assigned port |
+| `services.<name>.port.base` | — | Base port number (1-65535). Main branch uses this directly; other branches add a hash offset. |
+| `services.<name>.port.var` | — | Env var name that receives the computed port (written to `.env.local`) |
 | `services.<name>.env_file` | — | The `.env` file for this service (auto-symlinked). Required if you use `services.<name>.env`. |
 | `services.<name>.env` | — | Additional env vars scoped to this service's `.env.local` |
 | `env` | — | Global env vars (written to all `.env.local` files) |
@@ -317,16 +317,25 @@ services:
     env_file: apps/api/.env           # Symlinked; .env.local written next to it
     port:
       base: 4000
-      env: PORT                       # PORT=4045 in apps/api/.env.local
+      var: PORT                       # PORT=4045 written to apps/api/.env.local
     env:
-      CORS_ORIGIN: "http://localhost:{{web.port}}"  # Scoped to api's .env.local
+      CORS_ORIGIN: "http://localhost:{{web.port}}"  # Also written to api's .env.local
+
   web:
     env_file: apps/web/.env
     port:
       base: 3000
-      env: WEB_PORT
+      var: WEB_PORT
     env:
-      VITE_API_URL: "http://localhost:{{api.port}}"  # Scoped to web's .env.local
+      VITE_API_URL: "http://localhost:{{api.port}}"  # {{api.port}} = api's computed port
+
+  # Env-only service — no port block needed. Gets env vars written but
+  # no port assigned. Useful for services that share another service's
+  # port (like a desktop wrapper) or don't listen on a port at all.
+  desktop:
+    env_file: apps/desktop/.env
+    env:
+      PORT: "{{web.port}}"            # Cross-references web's computed port
 ```
 
 ## Tmux Layouts
@@ -504,7 +513,7 @@ services:
   app:
     port:
       base: 3000
-      env: PORT
+      var: PORT
 
 tmux:
   panes:
@@ -520,14 +529,14 @@ services:
     env_file: apps/api/.env
     port:
       base: 4000
-      env: PORT
+      var: PORT
     env:
       CORS_ORIGIN: "http://localhost:{{web.port}}"
   web:
     env_file: apps/web/.env
     port:
       base: 3000
-      env: WEB_PORT
+      var: WEB_PORT
     env:
       VITE_API_URL: "http://localhost:{{api.port}}"
 
@@ -549,19 +558,19 @@ services:
   gateway:
     port:
       base: 8080
-      env: GATEWAY_PORT
+      var: GATEWAY_PORT
   users:
     port:
       base: 8081
-      env: USERS_PORT
+      var: USERS_PORT
   billing:
     port:
       base: 8082
-      env: BILLING_PORT
+      var: BILLING_PORT
   frontend:
     port:
       base: 3000
-      env: FRONTEND_PORT
+      var: FRONTEND_PORT
 
 env:
   API_URL: "http://localhost:{{gateway.port}}"

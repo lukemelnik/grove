@@ -30,10 +30,15 @@ env_files:
 # so branches never collide.
 #
 # Each service can declare:
-#   port:     base port and which env var receives the assigned port
+#   port:     base port and the env var name that receives the assigned port (optional)
 #   env_file: the .env file for this service (symlinked + .env.local written)
 #             required when using service-level env below
 #   env:      additional env vars scoped to this service's .env.local
+#
+# Services without a port block are env-only — they get env vars written
+# but skip port assignment. Useful for services that share another
+# service's port (e.g. a desktop wrapper) or don't listen on a port at all
+# (e.g. background workers, build tools).
 #
 # Template variables:
 #   {{service_name.port}} — resolves to the assigned port for a service
@@ -43,18 +48,23 @@ services:
     env_file: apps/api/.env
     port:
       base: 4000
-      env: PORT
+      var: PORT
     env:
       CORS_ORIGIN: "http://localhost:{{web.port}}"
   web:
     env_file: apps/web/.env
     port:
       base: 3000
-      env: WEB_PORT
+      var: WEB_PORT
     env:
       VITE_API_URL: "http://localhost:{{api.port}}"
       VITE_APP_URL: "http://localhost:{{web.port}}"
       VITE_WORKTREE_NAME: "{{branch}}"
+  # Env-only service (no port block) — just gets env vars written.
+  # desktop:
+  #   env_file: apps/desktop/.env
+  #   env:
+  #     PORT: "{{web.port}}"
 
 # Additional environment variables (global, written to all .env.local files).
 # Most configs won't need this — prefer service-level env above.

@@ -79,8 +79,41 @@ type ServicePort struct {
 	Base int `yaml:"base"`
 
 	// Env is the environment variable name to set for this service's port.
-	Env string `yaml:"env"`
+	// Accepts both "var" (preferred) and "env" (deprecated) in YAML.
+	Env string `yaml:"var"`
 }
+
+// UnmarshalYAML supports both "var" (preferred) and "env" (deprecated alias)
+// for the port env var name field.
+func (sp *ServicePort) UnmarshalYAML(value *yaml.Node) error {
+	// Decode into a raw map to handle both field names.
+	var raw struct {
+		Base int    `yaml:"base"`
+		Var  string `yaml:"var"`
+		Env  string `yaml:"env"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	sp.Base = raw.Base
+	switch {
+	case raw.Var != "" && raw.Env != "":
+		return fmt.Errorf("port: use either \"var\" or \"env\", not both (\"env\" is deprecated, prefer \"var\")")
+	case raw.Var != "":
+		sp.Env = raw.Var
+	default:
+		sp.Env = raw.Env
+	}
+	return nil
+}
+
+// HasPort returns true if the service has a port block defined.
+// A service with no port block (Base == 0 and Env == "") is an env-only
+// service that skips port assignment and validation.
+func (s Service) HasPort() bool {
+	return s.Port.Base != 0 || s.Port.Env != ""
+}
+
 
 // TmuxConfig represents the tmux workspace configuration.
 type TmuxConfig struct {
@@ -270,19 +303,33 @@ func Validate(cfg *Config) error {
 	// Validate services
 	envSeen := make(map[string]string) // env var name -> service name
 	for name, svc := range cfg.Services {
-		if svc.Port.Base <= 0 || svc.Port.Base > 65535 {
-			return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port.Base)
+		if svc.HasPort() {
+			// Partial port block: env set but base missing (or vice versa)
+			if svc.Port.Base <= 0 {
+				return fmt.Errorf("service %q: port.base is required when port is defined — either add a base port or remove the port block entirely (services without port are valid for env-only use)", name)
+			}
+			if svc.Port.Base > 65535 {
+				return fmt.Errorf("service %q: port must be between 1 and 65535, got %d", name, svc.Port.Base)
+			}
+			if IsPortBlocked(svc.Port.Base) {
+				return fmt.Errorf("service %q: port %d is browser-restricted (blocked by Chromium/Firefox) — pick a different base port", name, svc.Port.Base)
+			}
+			if svc.Port.Env == "" {
+				return fmt.Errorf("service %q: port.var is required when port is defined — either add an env var name or remove the port block entirely", name)
+			}
+			if other, exists := envSeen[svc.Port.Env]; exists {
+				return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Port.Env)
+			}
+			envSeen[svc.Port.Env] = name
 		}
-		if IsPortBlocked(svc.Port.Base) {
-			return fmt.Errorf("service %q: port %d is browser-restricted (blocked by Chromium/Firefox) — pick a different base port", name, svc.Port.Base)
+		// Catch collision: port.env names the var that receives the computed
+		// port — if the same key also appears in env, the env value silently
+		// wins, which is almost certainly a mistake.
+		if svc.HasPort() && len(svc.Env) > 0 {
+			if _, exists := svc.Env[svc.Port.Env]; exists {
+				return fmt.Errorf("service %q: env var %q is already set by port.var — remove it from env to avoid a silent override", name, svc.Port.Env)
+			}
 		}
-		if svc.Port.Env == "" {
-			return fmt.Errorf("service %q: port env var name is required", name)
-		}
-		if other, exists := envSeen[svc.Port.Env]; exists {
-			return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Port.Env)
-		}
-		envSeen[svc.Port.Env] = name
 		if len(svc.Env) > 0 && svc.EnvFile == "" {
 			return fmt.Errorf("service %q: env requires env_file so Grove knows where to write service-scoped vars", name)
 		}
@@ -296,6 +343,32 @@ func Validate(cfg *Config) error {
 			if strings.HasPrefix(cleaned, "..") {
 				return fmt.Errorf("service %q: env_file %q escapes the project root", name, svc.EnvFile)
 			}
+		}
+	}
+
+	// Check for env var key collisions across services sharing the same env_file.
+	// Maps env_file -> env var key -> service name that writes it.
+	envFileKeys := make(map[string]map[string]string)
+	for name, svc := range cfg.Services {
+		if svc.EnvFile == "" {
+			continue
+		}
+		if envFileKeys[svc.EnvFile] == nil {
+			envFileKeys[svc.EnvFile] = make(map[string]string)
+		}
+		keys := envFileKeys[svc.EnvFile]
+
+		if svc.HasPort() {
+			if other, exists := keys[svc.Port.Env]; exists {
+				return fmt.Errorf("services %q and %q both write env var %q to %s", other, name, svc.Port.Env, svc.EnvFile+".local")
+			}
+			keys[svc.Port.Env] = name
+		}
+		for key := range svc.Env {
+			if other, exists := keys[key]; exists {
+				return fmt.Errorf("services %q and %q both write env var %q to %s", other, name, key, svc.EnvFile+".local")
+			}
+			keys[key] = name
 		}
 	}
 

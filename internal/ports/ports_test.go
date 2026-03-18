@@ -295,3 +295,22 @@ func TestAssign_EmptyDefaultBranchFallsBackToHash(t *testing.T) {
 		t.Error("expected hash-based offset when defaultBranch is empty, got 0")
 	}
 }
+
+func TestAssign_PortlessServiceSkipped(t *testing.T) {
+	services := map[string]config.Service{
+		"api":     {Port: config.ServicePort{Base: 4000, Env: "PORT"}},
+		"desktop": {EnvFile: "apps/desktop/.env"},
+	}
+
+	result, err := Assign(services, "main", DefaultMaxOffset, "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, ok := result.Ports["api"]; !ok {
+		t.Error("expected api to have an assigned port")
+	}
+	if _, ok := result.Ports["desktop"]; ok {
+		t.Error("expected desktop (no port block) to be skipped in port assignment")
+	}
+}

@@ -77,6 +77,12 @@ func Assign(services map[string]config.Service, branchName string, maxOffset int
 
 		for _, name := range names {
 			svc := services[name]
+
+			// Skip services without a port block (env-only services)
+			if !svc.HasPort() {
+				continue
+			}
+
 			port := svc.Port.Base + offset
 
 			// Check port is in valid range

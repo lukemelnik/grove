@@ -110,7 +110,7 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	if !strings.Contains(content, "base: 4000") {
 		t.Errorf("expected base 4000 in config, got:\n%s", content)
 	}
-	if !strings.Contains(content, "env: PORT") {
+	if !strings.Contains(content, "var: PORT") {
 		t.Errorf("expected env PORT in config, got:\n%s", content)
 	}
 	if !strings.Contains(content, "web:") {
@@ -119,7 +119,7 @@ func TestInitCmd_FullInteractive(t *testing.T) {
 	if !strings.Contains(content, "base: 3000") {
 		t.Errorf("expected base 3000 in config, got:\n%s", content)
 	}
-	if !strings.Contains(content, "env: WEB_PORT") {
+	if !strings.Contains(content, "var: WEB_PORT") {
 		t.Errorf("expected env WEB_PORT in config, got:\n%s", content)
 	}
 	if !strings.Contains(content, "tmux:") {
@@ -468,11 +468,11 @@ func TestInitCmd_DefaultEnvVarName(t *testing.T) {
 
 	content := string(data)
 	// First service should get PORT as default
-	if !strings.Contains(content, "env: PORT") {
+	if !strings.Contains(content, "var: PORT") {
 		t.Errorf("expected first service to have env: PORT, got:\n%s", content)
 	}
 	// Second service should get WEB_PORT as default
-	if !strings.Contains(content, "env: WEB_PORT") {
+	if !strings.Contains(content, "var: WEB_PORT") {
 		t.Errorf("expected second service to have env: WEB_PORT, got:\n%s", content)
 	}
 }

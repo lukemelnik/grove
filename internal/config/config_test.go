@@ -315,6 +315,51 @@ services:
 	}
 }
 
+func TestParse_ServiceWithoutPort(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+    env_file: apps/api/.env
+  desktop:
+    env_file: apps/desktop/.env
+    env:
+      PORT: "{{api.port}}"
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("expected no error for port-less service, got: %v", err)
+	}
+	if cfg.Services["desktop"].HasPort() {
+		t.Error("expected desktop service to have no port")
+	}
+	if !cfg.Services["api"].HasPort() {
+		t.Error("expected api service to have a port")
+	}
+}
+
+func TestParse_PortEnvCollidesWithEnv(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      env: PORT
+    env:
+      PORT: "9999"
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error when port.env collides with env key")
+	}
+	if !strings.Contains(err.Error(), "already set by port.var") {
+		t.Errorf("expected collision error, got: %v", err)
+	}
+}
+
 func TestParse_InvalidTmuxMode(t *testing.T) {
 	yaml := []byte(`
 services:
