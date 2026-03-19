@@ -948,6 +948,107 @@ services:
 	}
 }
 
+func TestParse_HooksPostCreate(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  post_create:
+    - scripts/setup.sh
+    - scripts/generate.sh
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Hooks == nil {
+		t.Fatal("expected hooks config")
+	}
+	if len(cfg.Hooks.PostCreate) != 2 {
+		t.Fatalf("expected 2 post_create hooks, got %d", len(cfg.Hooks.PostCreate))
+	}
+	if cfg.Hooks.PostCreate[0] != "scripts/setup.sh" {
+		t.Errorf("expected first hook 'scripts/setup.sh', got %s", cfg.Hooks.PostCreate[0])
+	}
+	if cfg.Hooks.PostCreate[1] != "scripts/generate.sh" {
+		t.Errorf("expected second hook 'scripts/generate.sh', got %s", cfg.Hooks.PostCreate[1])
+	}
+}
+
+func TestParse_HooksAbsolutePath(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  post_create:
+    - /usr/local/bin/evil.sh
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for absolute hook path")
+	}
+	if !strings.Contains(err.Error(), "must be a relative path") {
+		t.Errorf("expected relative path error, got: %v", err)
+	}
+}
+
+func TestParse_HooksEscapesRoot(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  post_create:
+    - ../../etc/evil.sh
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for hook escaping project root")
+	}
+	if !strings.Contains(err.Error(), "escapes the project root") {
+		t.Errorf("expected escape error, got: %v", err)
+	}
+}
+
+func TestParse_HooksEmptyPath(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  post_create:
+    - ""
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for empty hook path")
+	}
+	if !strings.Contains(err.Error(), "must not be empty") {
+		t.Errorf("expected empty path error, got: %v", err)
+	}
+}
+
+func TestParse_HooksDuplicate(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  post_create:
+    - scripts/setup.sh
+    - scripts/setup.sh
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for duplicate hook script")
+	}
+	if !strings.Contains(err.Error(), "duplicate script") {
+		t.Errorf("expected duplicate error, got: %v", err)
+	}
+}
+
+func TestParse_NoHooks(t *testing.T) {
+	yaml := []byte(`
+tmux:
+  panes:
+    - nvim
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Hooks != nil {
+		t.Errorf("expected nil hooks when not configured")
+	}
+}
+
 func TestDiscover_SymlinkDir(t *testing.T) {
 	// Config in a parent dir reached via a symlinked child
 	realDir := t.TempDir()

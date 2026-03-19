@@ -508,6 +508,114 @@ tmux:
 	}
 }
 
+func TestCreateCmd_PostCreateHooks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  post_create:
+    - scripts/post-create.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	// Create the hook script in the repo
+	scriptsDir := filepath.Join(repoDir, "scripts")
+	os.MkdirAll(scriptsDir, 0755)
+	hookScript := `#!/bin/bash
+echo "GROVE_BRANCH=$GROVE_BRANCH" > "$GROVE_WORKTREE/hook-ran.txt"
+echo "GROVE_PORT_API=$GROVE_PORT_API" >> "$GROVE_WORKTREE/hook-ran.txt"
+`
+	os.WriteFile(filepath.Join(scriptsDir, "post-create.sh"), []byte(hookScript), 0755)
+
+	// Commit the script so it exists in the worktree
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	gitRun("add", "scripts/post-create.sh")
+	gitRun("commit", "-m", "add hook script")
+	gitRun("branch", "feat/hook-test")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/hook-test", "--no-tmux"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	// Verify hook ran by checking the marker file
+	wtPath := filepath.Join(worktreeDir, worktree.SanitizeBranchName("feat/hook-test"))
+	markerPath := filepath.Join(wtPath, "hook-ran.txt")
+	data, err := os.ReadFile(markerPath)
+	if err != nil {
+		t.Fatalf("hook marker file not found at %s: %v", markerPath, err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "GROVE_BRANCH=feat/hook-test") {
+		t.Errorf("hook did not receive GROVE_BRANCH, got: %s", content)
+	}
+}
+
+func TestCreateCmd_PostCreateHookFailureWarns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  post_create:
+    - scripts/fail.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	scriptsDir := filepath.Join(repoDir, "scripts")
+	os.MkdirAll(scriptsDir, 0755)
+	os.WriteFile(filepath.Join(scriptsDir, "fail.sh"), []byte("#!/bin/bash\nexit 1\n"), 0755)
+
+	gitRun := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	gitRun("add", "scripts/fail.sh")
+	gitRun("commit", "-m", "add failing hook")
+	gitRun("branch", "feat/fail-hook")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	rootCmd := NewRootCmd()
+	var outBuf, errBuf bytes.Buffer
+	rootCmd.SetOut(&outBuf)
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetArgs([]string{"create", "feat/fail-hook", "--no-tmux"})
+
+	// Should NOT return an error — hooks warn but don't fail
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create should succeed despite hook failure: %v", err)
+	}
+	if !strings.Contains(errBuf.String(), "Warning") {
+		t.Errorf("expected warning in stderr, got: %s", errBuf.String())
+	}
+}
+
 func tmuxCommandSeen(runner *recordingTmuxRunner, name string) bool {
 	for _, cmd := range runner.commands {
 		if len(cmd) > 0 && cmd[0] == name {

@@ -55,6 +55,16 @@ type Config struct {
 
 	// Tmux defines optional tmux workspace configuration.
 	Tmux *TmuxConfig `yaml:"tmux,omitempty"`
+
+	// Hooks defines lifecycle hooks (scripts to run at specific points).
+	Hooks *HooksConfig `yaml:"hooks,omitempty"`
+}
+
+// HooksConfig defines lifecycle hooks.
+type HooksConfig struct {
+	// PostCreate lists scripts to run after worktree creation.
+	// Paths are relative to the project root and cannot escape it.
+	PostCreate []string `yaml:"post_create,omitempty"`
 }
 
 // Service represents a service with a base port, an env file, and optional env vars.
@@ -380,6 +390,27 @@ func Validate(cfg *Config) error {
 		cleaned := filepath.Clean(envFile)
 		if strings.HasPrefix(cleaned, "..") {
 			return fmt.Errorf("env_files: %q escapes the project root", envFile)
+		}
+	}
+
+	// Validate hooks
+	if cfg.Hooks != nil {
+		seen := make(map[string]bool)
+		for _, script := range cfg.Hooks.PostCreate {
+			if script == "" {
+				return fmt.Errorf("hooks.post_create: script path must not be empty")
+			}
+			if filepath.IsAbs(script) {
+				return fmt.Errorf("hooks.post_create: %q must be a relative path", script)
+			}
+			cleaned := filepath.Clean(script)
+			if strings.HasPrefix(cleaned, "..") {
+				return fmt.Errorf("hooks.post_create: %q escapes the project root", script)
+			}
+			if seen[cleaned] {
+				return fmt.Errorf("hooks.post_create: duplicate script %q", script)
+			}
+			seen[cleaned] = true
 		}
 	}
 

@@ -136,6 +136,21 @@ tmux:
     - cmd: lazygit
       name: git
       optional: true
+
+# Hooks — scripts to run at specific lifecycle points.
+# Scripts are resolved relative to the project root.
+# Working directory is set to the new worktree path.
+# Environment includes GROVE_BRANCH, GROVE_WORKTREE, GROVE_PROJECT_ROOT,
+# and GROVE_PORT_<SERVICE> (uppercased) for each service with a port.
+# Scripts run after .env.local files are written, before tmux setup.
+# On failure: a warning is printed, but create continues.
+#
+# NOTE: Hook scripts are executed as shell commands — review them before
+# running grove create in an unfamiliar repo, just as you would review
+# a Makefile or docker-compose.yml.
+hooks:
+  post_create:
+    - scripts/grove-post-create.sh
 `
 
 func newSchemaCmd() *cobra.Command {

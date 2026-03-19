@@ -8,6 +8,7 @@ import (
 
 	"github.com/lukemelnik/grove/internal/config"
 	"github.com/lukemelnik/grove/internal/env"
+	"github.com/lukemelnik/grove/internal/hooks"
 	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/tmux"
 	"github.com/lukemelnik/grove/internal/worktree"
@@ -175,7 +176,28 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 7: Tmux workspace setup (default to empty config if not specified)
+	// Step 7: Run post_create hooks
+	if cfg.Hooks != nil && len(cfg.Hooks.PostCreate) > 0 {
+		hookStdout := os.Stdout
+		if jsonOutput {
+			hookStdout = os.Stderr // keep JSON output clean
+		}
+		hookOpts := hooks.RunOpts{
+			Branch:       branch,
+			WorktreePath: result.Path,
+			ProjectRoot:  projectRoot,
+			Ports:        portAssignment.Ports,
+			Stdout:       hookStdout,
+			Stderr:       os.Stderr,
+		}
+		if warnings := hooks.RunPostCreate(cfg.Hooks.PostCreate, hookOpts); len(warnings) > 0 {
+			for _, w := range warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", w)
+			}
+		}
+	}
+
+	// Step 8: Tmux workspace setup (default to empty config if not specified)
 	if !noTmux {
 		tmuxCfg := cfg.Tmux
 		if tmuxCfg == nil {
