@@ -114,6 +114,10 @@ tmux:
       setup: pnpm install
       name: dev
       optional: true
+
+hooks:
+  post_create:
+    - scripts/grove-post-create.sh
 ```
 
 ### Config Reference
@@ -129,6 +133,7 @@ tmux:
 | `services.<name>.env` | — | Additional env vars scoped to this service's `.env.local` |
 | `env` | — | Global env vars (written to all `.env.local` files) |
 | `tmux` | — | Tmux workspace configuration |
+| `hooks.post_create` | — | Scripts to run after worktree creation (before tmux setup) |
 
 ## Commands
 
@@ -337,6 +342,42 @@ services:
     env:
       PORT: "{{web.port}}"            # Cross-references web's computed port
 ```
+
+## Hooks
+
+Grove can run scripts at specific lifecycle points. Scripts run sequentially; failures produce a warning but do not block worktree creation.
+
+```yaml
+hooks:
+  post_create:
+    - scripts/grove-post-create.sh
+```
+
+**`post_create`** hooks run after `.env.local` files are written and before tmux setup. The working directory is set to the new worktree path.
+
+Each script receives these environment variables:
+
+| Variable | Description |
+|----------|-------------|
+| `GROVE_BRANCH` | Branch name |
+| `GROVE_WORKTREE` | Absolute path to the new worktree |
+| `GROVE_PROJECT_ROOT` | Absolute path to the main repo |
+| `GROVE_PORT_<SERVICE>` | Assigned port for each service (uppercased, e.g. `GROVE_PORT_API`) |
+
+This is useful for generating config files that can't use `.env.local` — for example, a native iOS app that reads ports from a compiled Swift file:
+
+```bash
+#!/bin/bash
+# scripts/grove-post-create.sh
+cat > apps/ios/Config/LocalConfig.swift <<EOF
+enum LocalConfig {
+    static let apiPort: Int? = $GROVE_PORT_API
+    static let webPort: Int? = $GROVE_PORT_WEB
+}
+EOF
+```
+
+Scripts are resolved relative to the project root. Paths must be relative and cannot escape the project root.
 
 ## Tmux Layouts
 
@@ -590,7 +631,7 @@ tmux:
 
 Grove uses an **explicit-invocation** model — nothing happens until you run `grove create` or `grove attach`. This is the same model as `make`, `npm run`, `docker compose up`, and similar tools: you review the config, then run the command.
 
-**Pane commands are code.** The `cmd` and `setup` fields in `tmux.panes` are executed as shell commands. Review `.grove.yml` before running `grove create` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
+**Pane commands and hooks are code.** The `cmd` and `setup` fields in `tmux.panes` and the scripts listed in `hooks.post_create` are executed as shell commands. Review `.grove.yml` before running `grove create` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
 
 **Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time.
 
