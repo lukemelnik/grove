@@ -79,7 +79,10 @@ func (s *Server) ListenAndServe() error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", s.listenAddr, err)
 	}
+	return s.Serve(ln)
+}
 
+func (s *Server) Serve(ln net.Listener) error {
 	if s.tlsEnabled && s.httpServer.TLSConfig != nil {
 		tlsLn := tls.NewListener(ln, s.httpServer.TLSConfig)
 		return s.httpServer.Serve(tlsLn)

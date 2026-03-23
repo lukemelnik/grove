@@ -309,7 +309,6 @@ func runProxyForeground(cmd *cobra.Command, stateDir string, port int, enableHTT
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("cannot bind to %s — is another process using this port? (check with: lsof -i :%d)", listenAddr, port))
 	}
-	ln.Close()
 
 	registry := proxy.NewRegistry(stateDir)
 	routeTable := proxy.NewRouteTable()
@@ -383,7 +382,7 @@ func runProxyForeground(cmd *cobra.Command, stateDir string, port int, enableHTT
 		fmt.Fprintf(cmd.OutOrStdout(), "Active routes: %d\n", len(routes))
 	}
 
-	err = srv.ListenAndServe()
+	err = srv.Serve(ln)
 
 	cleanPIDFile(stateDir)
 	cleanPortFile(stateDir)

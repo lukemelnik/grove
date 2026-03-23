@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/lukemelnik/grove/internal/config"
@@ -33,7 +34,7 @@ func NewRouteTable() *RouteTable {
 func (rt *RouteTable) Lookup(hostname string) (Route, bool) {
 	rt.mu.RLock()
 	defer rt.mu.RUnlock()
-	r, ok := rt.routes[hostname]
+	r, ok := rt.routes[strings.ToLower(hostname)]
 	return r, ok
 }
 
