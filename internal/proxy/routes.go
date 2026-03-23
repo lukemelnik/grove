@@ -60,11 +60,6 @@ func (rt *RouteTable) All() []Route {
 	return result
 }
 
-type WorktreeLister interface {
-	List() ([]worktree.Info, error)
-	DefaultBranch() string
-}
-
 func ComputeAllRoutes(entries []ProjectEntry) ([]Route, error) {
 	var allRoutes []Route
 

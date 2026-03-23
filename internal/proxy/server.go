@@ -21,6 +21,7 @@ type Server struct {
 	routeTable  *RouteTable
 	certManager *certs.Manager
 	httpServer  *http.Server
+	transport   *http.Transport
 	tlsEnabled  bool
 	listenAddr  string
 }
@@ -38,6 +39,16 @@ func NewServer(cfg ServerConfig) *Server {
 		certManager: cfg.CertManager,
 		tlsEnabled:  cfg.TLSEnabled,
 		listenAddr:  cfg.ListenAddr,
+		transport: &http.Transport{
+			DialContext: (&net.Dialer{
+				Timeout:   5 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			MaxIdleConns:          100,
+			IdleConnTimeout:       90 * time.Second,
+			TLSHandshakeTimeout:   5 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+		},
 	}
 
 	handler := http.HandlerFunc(s.handleRequest)
@@ -120,16 +131,7 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request, route Route
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			s.handleBadGateway(rw, req, route, err)
 		},
-		Transport: &http.Transport{
-			DialContext: (&net.Dialer{
-				Timeout:   5 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   5 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-		},
+		Transport: s.transport,
 	}
 
 	proxy.ServeHTTP(w, r)
@@ -265,8 +267,15 @@ func extractHostname(host string) string {
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
-		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+		return false
+	}
+	for _, v := range strings.Split(r.Header.Get("Connection"), ",") {
+		if strings.EqualFold(strings.TrimSpace(v), "upgrade") {
+			return true
+		}
+	}
+	return false
 }
 
 func clientIP(r *http.Request) string {
