@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/proxy"
 )
 
 // templatePattern matches {{service.port}} and {{branch}} references in env values.
@@ -85,10 +86,69 @@ func ParseEnvContent(content string) (map[string]string, error) {
 	return result, nil
 }
 
-// ResolveTemplates replaces {{service.port}} and {{branch}} references in a
-// string using the provided port map and branch name.
+// ProxyInfo holds the proxy configuration needed for template resolution.
+type ProxyInfo struct {
+	ProjectName   string
+	Port          int
+	HTTPS         bool
+	DefaultBranch string
+}
+
+// ProxyInfoFromConfig constructs a ProxyInfo from a config's proxy section.
+// Returns nil if proxyCfg is nil.
+func ProxyInfoFromConfig(proxyCfg *config.ProxyConfig, projectRoot, defaultBranch string) *ProxyInfo {
+	if proxyCfg == nil {
+		return nil
+	}
+	name := proxyCfg.Name
+	if name == "" {
+		name = filepath.Base(filepath.Clean(projectRoot))
+	}
+	port := proxyCfg.Port
+	if port == 0 {
+		port = proxy.DefaultProxyPort
+	}
+	return &ProxyInfo{
+		ProjectName:   name,
+		Port:          port,
+		HTTPS:         proxyCfg.HTTPS,
+		DefaultBranch: defaultBranch,
+	}
+}
+
+// BuildProxyURL builds the full proxy URL for a service.
+func (pi *ProxyInfo) BuildProxyURL(service, branch string) (string, error) {
+	hostname, err := proxy.BuildHostname(service, branch, pi.ProjectName, pi.DefaultBranch)
+	if err != nil {
+		return "", err
+	}
+
+	scheme := "http"
+	if pi.HTTPS {
+		scheme = "https"
+	}
+
+	defaultPort := 80
+	if pi.HTTPS {
+		defaultPort = 443
+	}
+
+	if pi.Port == defaultPort {
+		return fmt.Sprintf("%s://%s", scheme, hostname), nil
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, hostname, pi.Port), nil
+}
+
+// BuildProxyHost builds just the proxy hostname for a service.
+func (pi *ProxyInfo) BuildProxyHost(service, branch string) (string, error) {
+	return proxy.BuildHostname(service, branch, pi.ProjectName, pi.DefaultBranch)
+}
+
+// ResolveTemplates replaces {{service.port}}, {{service.url}}, {{service.host}},
+// and {{branch}} references in a string using the provided port map, branch name,
+// and optional proxy info.
 // Returns the resolved string and an error if any referenced template is unknown.
-func ResolveTemplates(value string, ports map[string]int, branch string) (string, error) {
+func ResolveTemplates(value string, ports map[string]int, branch string, proxyInfo *ProxyInfo) (string, error) {
 	var resolveErr error
 
 	resolved := templatePattern.ReplaceAllStringFunc(value, func(match string) string {
@@ -110,6 +170,32 @@ func ResolveTemplates(value string, ports map[string]int, branch string) (string
 				return match
 			}
 			return fmt.Sprintf("%d", port)
+		}
+
+		if len(parts) == 2 && parts[1] == "url" {
+			if proxyInfo == nil {
+				resolveErr = fmt.Errorf("template %q requires proxy configuration", match)
+				return match
+			}
+			urlStr, err := proxyInfo.BuildProxyURL(parts[0], branch)
+			if err != nil {
+				resolveErr = fmt.Errorf("building proxy URL for %q: %w", parts[0], err)
+				return match
+			}
+			return urlStr
+		}
+
+		if len(parts) == 2 && parts[1] == "host" {
+			if proxyInfo == nil {
+				resolveErr = fmt.Errorf("template %q requires proxy configuration", match)
+				return match
+			}
+			host, err := proxyInfo.BuildProxyHost(parts[0], branch)
+			if err != nil {
+				resolveErr = fmt.Errorf("building proxy hostname for %q: %w", parts[0], err)
+				return match
+			}
+			return host
 		}
 
 		resolveErr = fmt.Errorf("unknown template %q", match)
@@ -280,10 +366,10 @@ func (m *ManagedEnv) EnvLocalMappings(cfg *config.Config, projectRoot string) ([
 	return filtered, nil
 }
 
-func resolveGlobalEnv(cfg *config.Config, ports map[string]int, branch string) (map[string]string, error) {
+func resolveGlobalEnv(cfg *config.Config, ports map[string]int, branch string, proxyInfo *ProxyInfo) (map[string]string, error) {
 	result := make(map[string]string)
 	for k, v := range cfg.Env {
-		resolved, err := ResolveTemplates(v, ports, branch)
+		resolved, err := ResolveTemplates(v, ports, branch, proxyInfo)
 		if err != nil {
 			return nil, fmt.Errorf("resolving template in env var %s: %w", k, err)
 		}
@@ -294,8 +380,8 @@ func resolveGlobalEnv(cfg *config.Config, ports map[string]int, branch string) (
 
 // BuildManagedEnv resolves Grove-managed env vars while preserving service
 // ownership for service-scoped values.
-func BuildManagedEnv(cfg *config.Config, ports map[string]int, branch string) (*ManagedEnv, error) {
-	global, err := resolveGlobalEnv(cfg, ports, branch)
+func BuildManagedEnv(cfg *config.Config, ports map[string]int, branch string, proxyInfo *ProxyInfo) (*ManagedEnv, error) {
+	global, err := resolveGlobalEnv(cfg, ports, branch, proxyInfo)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +413,7 @@ func BuildManagedEnv(cfg *config.Config, ports map[string]int, branch string) (*
 		sort.Strings(keys)
 
 		for _, key := range keys {
-			resolved, err := ResolveTemplates(svc.Env[key], ports, branch)
+			resolved, err := ResolveTemplates(svc.Env[key], ports, branch, proxyInfo)
 			if err != nil {
 				return nil, fmt.Errorf("resolving template in service %s env var %s: %w", name, key, err)
 			}
@@ -356,7 +442,7 @@ func BuildManagedEnv(cfg *config.Config, ports map[string]int, branch string) (*
 //  2. top-level env block (with template resolution)
 //  3. service-level env blocks (with template resolution)
 //  4. service port vars (e.g., PORT=4045)
-func Resolve(cfg *config.Config, ports map[string]int, branch string, projectRoot string) (map[string]string, error) {
+func Resolve(cfg *config.Config, ports map[string]int, branch string, projectRoot string, proxyInfo *ProxyInfo) (map[string]string, error) {
 	result := make(map[string]string)
 
 	// Step 1: Read all .env files (order matters, later files override earlier ones)
@@ -374,7 +460,7 @@ func Resolve(cfg *config.Config, ports map[string]int, branch string, projectRoo
 		}
 	}
 
-	managed, err := BuildManagedEnv(cfg, ports, branch)
+	managed, err := BuildManagedEnv(cfg, ports, branch, proxyInfo)
 	if err != nil {
 		return nil, err
 	}

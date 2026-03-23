@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/worktree"
 
@@ -14,9 +15,10 @@ import (
 
 // listEntry is a single worktree entry for list output.
 type listEntry struct {
-	Branch   string         `json:"branch"`
-	Worktree string         `json:"worktree"`
-	Ports    map[string]int `json:"ports"`
+	Branch    string            `json:"branch"`
+	Worktree  string            `json:"worktree"`
+	Ports     map[string]int    `json:"ports"`
+	ProxyURLs map[string]string `json:"proxy_urls,omitempty"`
 }
 
 func newListCmd() *cobra.Command {
@@ -64,6 +66,7 @@ func runList(cmd *cobra.Command, args []string) error {
 	// Step 3: Compute ports for each worktree and build entries
 	// Filter out bare repos and the main worktree (same as project root)
 	defaultBranch := wtMgr.DefaultBranch()
+	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
 	var entries []listEntry
 	for _, wt := range worktrees {
 		if wt.IsBare || wt.Branch == "" {
@@ -80,6 +83,18 @@ func runList(cmd *cobra.Command, args []string) error {
 			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset, defaultBranch)
 			if err == nil {
 				entry.Ports = assignment.Ports
+			}
+
+			if proxyInfo != nil {
+				proxyURLs := make(map[string]string)
+				for name := range assignment.Ports {
+					if urlStr, urlErr := proxyInfo.BuildProxyURL(name, wt.Branch); urlErr == nil {
+						proxyURLs[name] = urlStr
+					}
+				}
+				if len(proxyURLs) > 0 {
+					entry.ProxyURLs = proxyURLs
+				}
 			}
 		}
 
@@ -122,6 +137,17 @@ func runList(cmd *cobra.Command, args []string) error {
 			sort.Strings(names)
 			for _, name := range names {
 				fmt.Fprintf(w, "  %s: %d\n", name, entry.Ports[name])
+			}
+		}
+		if len(entry.ProxyURLs) > 0 {
+			fmt.Fprintln(w, "Proxy:")
+			names := make([]string, 0, len(entry.ProxyURLs))
+			for name := range entry.ProxyURLs {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			for _, name := range names {
+				fmt.Fprintf(w, "  %s: %s\n", name, entry.ProxyURLs[name])
 			}
 		}
 	}

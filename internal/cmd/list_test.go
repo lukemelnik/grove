@@ -191,6 +191,127 @@ services:
 	}
 }
 
+func TestListCmd_WithProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+proxy: true
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	run("branch", "feat/proxy-list")
+	run("worktree", "add", filepath.Join(worktreeDir, "feat-proxy-list"), "feat/proxy-list")
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"list"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("list command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Proxy:") {
+		t.Errorf("expected 'Proxy:' section in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, ".localhost") {
+		t.Errorf("expected proxy URL with .localhost in output, got:\n%s", output)
+	}
+}
+
+func TestListCmd_WithProxy_JSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+proxy: true
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	run := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoDir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed: %s: %v", strings.Join(args, " "), string(out), err)
+		}
+	}
+	run("branch", "feat/proxy-json")
+	run("worktree", "add", filepath.Join(worktreeDir, "feat-proxy-json"), "feat/proxy-json")
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"list", "--json"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("list --json failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	var entries []listEntry
+	if err := json.Unmarshal(buf.Bytes(), &entries); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nRaw: %s", err, buf.String())
+	}
+
+	found := false
+	for _, e := range entries {
+		if e.Branch == "feat/proxy-json" {
+			found = true
+			if len(e.ProxyURLs) == 0 {
+				t.Error("expected proxy_urls in entry")
+			}
+			if _, ok := e.ProxyURLs["api"]; !ok {
+				t.Error("expected api proxy URL in entry")
+			}
+		}
+	}
+	if !found {
+		t.Error("expected feat/proxy-json entry in JSON output")
+	}
+}
+
 func TestListCmd_NoServices(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	CACertFile  = "ca.pem"
+	CACertFile   = "ca.pem"
 	CACommonName = "Grove Local CA"
 
 	caKeyFile        = "ca-key.pem"

@@ -4,12 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sort"
+	"syscall"
 
+	"github.com/lukemelnik/grove/internal/certs"
 	"github.com/lukemelnik/grove/internal/config"
 	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/hooks"
 	"github.com/lukemelnik/grove/internal/ports"
+	"github.com/lukemelnik/grove/internal/proxy"
 	"github.com/lukemelnik/grove/internal/tmux"
 	"github.com/lukemelnik/grove/internal/worktree"
 
@@ -138,7 +144,8 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	// Step 3: Resolve managed env before making any filesystem changes so a bad
 	// template fails fast instead of creating a partial worktree.
-	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch)
+	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
+	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch, proxyInfo)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("resolving managed environment: %w", err))
 	}
@@ -176,7 +183,12 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 7: Run post_create hooks
+	// Step 7: Proxy auto-setup (non-fatal — worktree creation always succeeds)
+	if cfg.Proxy != nil {
+		proxySetup(cmd, cfg, projectRoot, branch, defaultBranch, portAssignment.Ports, jsonOutput)
+	}
+
+	// Step 8: Run post_create hooks
 	if cfg.Hooks != nil && len(cfg.Hooks.PostCreate) > 0 {
 		hookStdout := os.Stdout
 		if jsonOutput {
@@ -197,7 +209,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 8: Tmux workspace setup (default to empty config if not specified)
+	// Step 9: Tmux workspace setup (default to empty config if not specified)
 	if !noTmux {
 		tmuxCfg := cfg.Tmux
 		if tmuxCfg == nil {
@@ -264,6 +276,95 @@ func outputText(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts
 	}
 
 	return nil
+}
+
+func proxySetup(cmd *cobra.Command, cfg *config.Config, projectRoot, branch, defaultBranch string, assignedPorts map[string]int, jsonOutput bool) {
+	stateDir, err := proxyStateDir()
+	if err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: proxy setup skipped: %v\n", err)
+		return
+	}
+
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: proxy setup skipped: %v\n", err)
+		return
+	}
+
+	caCertPath := filepath.Join(stateDir, certs.CACertFile)
+	if _, statErr := os.Stat(caCertPath); os.IsNotExist(statErr) {
+		if _, certErr := certs.EnsureCerts(stateDir); certErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not generate proxy certificates: %v\n", certErr)
+		}
+	}
+
+	if runtime.GOOS == "darwin" {
+		if !trustCheckCA() {
+			if isTerminal(int(os.Stdin.Fd())) {
+				fmt.Fprint(cmd.ErrOrStderr(), "Grove needs to add a local certificate to your keychain for HTTPS. Allow? [Y/n] ")
+				buf := make([]byte, 16)
+				n, _ := os.Stdin.Read(buf)
+				answer := string(buf[:n])
+				if answer == "" || answer == "\n" || answer[0] == 'y' || answer[0] == 'Y' {
+					if _, statErr := os.Stat(caCertPath); statErr == nil {
+						if trustErr := trustAddCA(caCertPath); trustErr != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not add CA to keychain: %v\n", trustErr)
+						}
+					}
+				}
+			}
+		}
+	}
+
+	if running, _ := isProxyRunning(stateDir); !running {
+		exe, err := findExecutable()
+		if err == nil {
+			proxyPort := proxy.DefaultProxyPort
+			if cfg.Proxy.Port != 0 {
+				proxyPort = cfg.Proxy.Port
+			}
+			args := []string{"proxy", "start", "-d", "--port", fmt.Sprintf("%d", proxyPort)}
+			if !cfg.Proxy.HTTPS {
+				args = append(args, "--no-https")
+			}
+			child := exec.Command(exe, args...)
+			child.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			logPath := filepath.Join(stateDir, logFileName)
+			logFile, logErr := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+			if logErr == nil {
+				child.Stdout = logFile
+				child.Stderr = logFile
+				if startErr := child.Start(); startErr != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not auto-start proxy: %v\n", startErr)
+				}
+				logFile.Close()
+			}
+		}
+	}
+
+	registry := proxy.NewRegistry(stateDir)
+	if regErr := registry.RegisterProject(projectRoot); regErr != nil {
+		if regErr.Error() != "" {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: proxy registration: %v\n", regErr)
+		}
+	}
+
+	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
+	if proxyInfo != nil && !jsonOutput {
+		names := make([]string, 0, len(assignedPorts))
+		for name := range assignedPorts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
+		fmt.Fprintln(cmd.OutOrStdout(), "Proxy URLs:")
+		for _, name := range names {
+			urlStr, urlErr := proxyInfo.BuildProxyURL(name, branch)
+			if urlErr != nil {
+				continue
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "  %s: %s\n", name, urlStr)
+		}
+	}
 }
 
 // getWorkingDir returns the current working directory.

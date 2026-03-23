@@ -74,6 +74,9 @@ Run 'grove schema' to see the full .grove.yml configuration reference.`,
 	cmd.Flags().String("tmux-layout", "", "tmux layout preset or raw string")
 	cmd.Flags().StringArray("env", nil, "add an env var (format: KEY=VALUE or KEY={{service.port}}, repeatable)")
 	cmd.Flags().Bool("force", false, "overwrite existing .grove.yml without prompting")
+	cmd.Flags().Bool("proxy", false, "enable HTTPS reverse proxy with defaults")
+	cmd.Flags().String("proxy-name", "", "proxy project name (default: repo directory name)")
+	cmd.Flags().Int("proxy-port", 0, "proxy listen port (default: 1355)")
 
 	return cmd
 }
@@ -88,18 +91,22 @@ func runInit(cmd *cobra.Command, args []string) error {
 	tmuxLayout, _ := cmd.Flags().GetString("tmux-layout")
 	envVars, _ := cmd.Flags().GetStringArray("env")
 	force, _ := cmd.Flags().GetBool("force")
+	proxyEnabled, _ := cmd.Flags().GetBool("proxy")
+	proxyName, _ := cmd.Flags().GetString("proxy-name")
+	proxyPort, _ := cmd.Flags().GetInt("proxy-port")
 
 	nonInteractive := len(services) > 0 || len(envFiles) > 0 || len(panes) > 0 ||
-		wtDir != "" || tmuxMode != "" || tmuxLayout != "" || len(envVars) > 0
+		wtDir != "" || tmuxMode != "" || tmuxLayout != "" || len(envVars) > 0 ||
+		proxyEnabled || proxyName != "" || proxyPort != 0
 
 	if nonInteractive {
-		return runInitNonInteractive(cmd, services, envFiles, panes, wtDir, tmuxMode, tmuxLayout, envVars, force)
+		return runInitNonInteractive(cmd, services, envFiles, panes, wtDir, tmuxMode, tmuxLayout, envVars, force, proxyEnabled, proxyName, proxyPort)
 	}
 
 	return runInitInteractive(cmd, force)
 }
 
-func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []string, wtDir, tmuxMode, tmuxLayout string, envVars []string, force bool) error {
+func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []string, wtDir, tmuxMode, tmuxLayout string, envVars []string, force bool, proxyEnabled bool, proxyName string, proxyPort int) error {
 	cwd, err := getWorkingDir()
 	if err != nil {
 		return fmt.Errorf("getting working directory: %w", err)
@@ -175,6 +182,20 @@ func runInitNonInteractive(cmd *cobra.Command, services, envFiles, panes []strin
 		}
 
 		cfg.Tmux = tmuxCfg
+	}
+
+	// Proxy config
+	if proxyEnabled || proxyName != "" || proxyPort != 0 {
+		proxyCfg := &config.ProxyConfig{
+			HTTPS: true,
+		}
+		if proxyName != "" {
+			proxyCfg.Name = proxyName
+		}
+		if proxyPort != 0 {
+			proxyCfg.Port = proxyPort
+		}
+		cfg.Proxy = proxyCfg
 	}
 
 	return writeConfig(cmd, configPath, &cfg)

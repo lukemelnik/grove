@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -174,7 +175,6 @@ func (sp *ServicePort) UnmarshalYAML(value *yaml.Node) error {
 func (s Service) HasPort() bool {
 	return s.Port.Base != 0 || s.Port.Env != ""
 }
-
 
 // TmuxConfig represents the tmux workspace configuration.
 type TmuxConfig struct {
@@ -485,7 +485,58 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	// Validate proxy config
+	if cfg.Proxy != nil {
+		if cfg.Proxy.Port != 0 {
+			if cfg.Proxy.Port < 1 || cfg.Proxy.Port > 65535 {
+				return fmt.Errorf("proxy: port must be between 1 and 65535, got %d", cfg.Proxy.Port)
+			}
+		}
+		if cfg.Proxy.Name != "" && !isValidDNSLabel(cfg.Proxy.Name) {
+			return fmt.Errorf("proxy: name %q is not a valid DNS label (lowercase alphanumeric with hyphens, 1-63 chars, no leading/trailing hyphens)", cfg.Proxy.Name)
+		}
+	}
+
+	// Validate proxy template usage: {{service.url}} and {{service.host}} require proxy config
+	if cfg.Proxy == nil {
+		for k, v := range cfg.Env {
+			if containsProxyTemplate(v) {
+				return fmt.Errorf("env var %s uses {{service.url}} or {{service.host}} template but no proxy config is defined — add a proxy: section", k)
+			}
+		}
+		for name, svc := range cfg.Services {
+			for k, v := range svc.Env {
+				if containsProxyTemplate(v) {
+					return fmt.Errorf("service %q env var %s uses {{service.url}} or {{service.host}} template but no proxy config is defined — add a proxy: section", name, k)
+				}
+			}
+		}
+	}
+
 	return nil
+}
+
+var proxyTemplatePattern = regexp.MustCompile(`\{\{\w+\.(url|host)\}\}`)
+
+func isValidDNSLabel(s string) bool {
+	if len(s) == 0 || len(s) > 63 {
+		return false
+	}
+	for i, c := range s {
+		isAlphaNum := (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
+		isHyphen := c == '-'
+		if !isAlphaNum && !isHyphen {
+			return false
+		}
+		if isHyphen && (i == 0 || i == len(s)-1) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsProxyTemplate(value string) bool {
+	return proxyTemplatePattern.MatchString(value)
 }
 
 // validatePanes recursively validates pane definitions.

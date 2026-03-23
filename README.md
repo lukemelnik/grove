@@ -118,6 +118,9 @@ tmux:
 hooks:
   post_create:
     - scripts/grove-post-create.sh
+
+# Optional: HTTPS reverse proxy
+proxy: true
 ```
 
 ### Config Reference
@@ -134,6 +137,10 @@ hooks:
 | `env` | — | Global env vars (written to all `.env.local` files) |
 | `tmux` | — | Tmux workspace configuration |
 | `hooks.post_create` | — | Scripts to run after worktree creation (before tmux setup) |
+| `proxy` | — | HTTPS reverse proxy configuration (see [Proxy](#proxy) section) |
+| `proxy.name` | repo directory name | Project name used in proxy hostnames |
+| `proxy.port` | `1355` | Proxy listen port |
+| `proxy.https` | `true` | Enable HTTPS/TLS termination |
 
 ## Commands
 
@@ -626,6 +633,106 @@ tmux:
       optional: true
       name: git
 ```
+
+## Proxy
+
+Grove includes an optional HTTPS reverse proxy that maps human-readable hostnames to service ports. Instead of remembering `localhost:4045`, access your services at `https://api.feat-auth.myapp.localhost:1355`.
+
+**The proxy is fully optional.** Everything works without it — ports, env files, tmux workspaces all function independently. The proxy is a purely additive convenience layer.
+
+### How It Works
+
+A single proxy daemon runs per machine, serving all grove projects. It routes requests by hostname:
+
+```
+<service>.<branch>.<project>.localhost → 127.0.0.1:<port>
+```
+
+Default branch routes omit the branch segment:
+
+```
+api.myapp.localhost           → 127.0.0.1:4000  (main branch)
+api.feat-auth.myapp.localhost → 127.0.0.1:4045  (feature branch)
+```
+
+TLS certificates are auto-generated per hostname using a local CA. The proxy binds to `127.0.0.1` only — never `0.0.0.0`.
+
+### Configuration
+
+Enable the proxy in `.grove.yml`:
+
+```yaml
+# Simple — enable with all defaults
+proxy: true
+
+# With overrides
+proxy:
+  name: myapp       # default: repo directory name
+  port: 1355        # default: 1355
+  https: true       # default: true
+```
+
+### Setup
+
+On first `grove create` with proxy config, Grove automatically:
+
+1. Generates a local CA certificate (pure Go, no openssl dependency)
+2. Prompts to add the CA to your macOS keychain (one-time system auth dialog)
+3. Starts the proxy daemon in the background
+4. Registers your project
+
+Subsequent runs skip steps 1–3 since everything is already set up.
+
+You can also manage the proxy manually:
+
+```bash
+grove proxy start       # Run in foreground
+grove proxy start -d    # Run as background daemon
+grove proxy stop        # Stop the daemon
+grove proxy status      # Show state, projects, and active routes
+grove proxy projects    # List registered projects
+grove proxy unregister  # Remove current project from proxy
+grove proxy clean       # Stop proxy and remove all state
+```
+
+Manage the local CA:
+
+```bash
+grove trust             # Add CA to macOS keychain
+grove trust --check     # Check if CA is trusted (exit code 0/1)
+grove trust --remove    # Remove CA from keychain
+```
+
+### Env Templates
+
+When proxy is configured, two additional template variables are available:
+
+```yaml
+services:
+  api:
+    env_file: apps/api/.env
+    port:
+      base: 4000
+      var: PORT
+    env:
+      PUBLIC_URL: "{{api.url}}"        # → https://api.myapp.localhost:1355
+      PUBLIC_HOST: "{{api.host}}"      # → api.myapp.localhost
+```
+
+### Multi-Project Support
+
+The proxy supports multiple grove projects simultaneously. Each project is namespaced by its project name:
+
+```
+api.projecta.localhost → 127.0.0.1:4000
+api.projectb.localhost → 127.0.0.1:5000
+```
+
+Projects are registered automatically on `grove create` and pruned automatically when their directories or configs are removed.
+
+### Attribution
+
+The proxy feature is inspired by [vercel-labs/portless](https://github.com/vercel-labs/portless) (Apache 2.0 license). Grove's implementation is a clean-room rewrite in Go using native `crypto/x509` and `crypto/tls` instead of OpenSSL, with a different architecture (passive daemon vs. command wrapper), but the hostname scheme and cert management approach are directly influenced by portless.
 
 ## Trust Model
 

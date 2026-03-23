@@ -59,6 +59,7 @@ Need help translating a pane layout into .grove.yml?
 		newSchemaCmd(),
 		newCompletionCmd(),
 		newTrustCmd(),
+		newProxyCmd(),
 	)
 
 	return rootCmd

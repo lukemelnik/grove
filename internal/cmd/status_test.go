@@ -238,6 +238,94 @@ services:
 	}
 }
 
+func TestStatusCmd_WithProxy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+proxy: true
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return true }
+	defer func() { isTerminal = origIsTerminal }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"status"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("status failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Proxy:") {
+		t.Errorf("expected 'Proxy:' section, got:\n%s", output)
+	}
+	if !strings.Contains(output, ".localhost") {
+		t.Errorf("expected proxy URL with .localhost, got:\n%s", output)
+	}
+}
+
+func TestStatusCmd_WithProxy_JSON(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+proxy: true
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return repoDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"status", "--json"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("status --json failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	var result statusOutput
+	if err := json.Unmarshal(buf.Bytes(), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v\nRaw: %s", err, buf.String())
+	}
+
+	if len(result.ProxyURLs) == 0 {
+		t.Error("expected proxy_urls in output")
+	}
+	if _, ok := result.ProxyURLs["api"]; !ok {
+		t.Error("expected api proxy URL in output")
+	}
+}
+
 func TestStatusCmd_MinimalConfig(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

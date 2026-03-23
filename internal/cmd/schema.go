@@ -137,6 +137,30 @@ tmux:
       name: git
       optional: true
 
+# Proxy — optional HTTPS reverse proxy configuration.
+# Maps <service>.<branch>.<project>.localhost hostnames to service ports,
+# with auto-generated TLS certificates for HTTPS and HTTP/2 support.
+#
+# Two forms are supported:
+#
+#   proxy: true          # Enable with all defaults
+#   proxy: false         # Disable (same as omitting the section)
+#   proxy:               # Enable with overrides
+#     name: myapp        # Project name in hostnames (default: repo directory name)
+#     port: 1355         # Proxy listen port (default: 1355)
+#     https: true        # Enable HTTPS/TLS (default: true)
+#
+# When enabled, grove create auto-generates a local CA, prompts to trust it,
+# and starts the proxy daemon. Services get proxy URLs like:
+#   https://api.myapp.localhost:1355           (default branch)
+#   https://api.feat-auth.myapp.localhost:1355 (feature branch)
+#
+# Template variables available when proxy is configured:
+#   {{service_name.url}}  — full proxy URL for a service
+#   {{service_name.host}} — proxy hostname for a service
+#
+# proxy: true
+
 # Hooks — scripts to run at specific lifecycle points.
 # Scripts are resolved relative to the project root.
 # Working directory is set to the new worktree path.

@@ -83,7 +83,8 @@ func runAttach(cmd *cobra.Command, args []string) error {
 		portAssignment = &ports.Assignment{Ports: map[string]int{}}
 	}
 
-	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch)
+	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
+	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch, proxyInfo)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("resolving managed environment: %w", err))
 	}

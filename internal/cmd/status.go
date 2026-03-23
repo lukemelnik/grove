@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/worktree"
 
@@ -14,9 +15,10 @@ import (
 
 // statusOutput is the structured JSON output for grove status --json.
 type statusOutput struct {
-	Branch   string         `json:"branch"`
-	Worktree string         `json:"worktree"`
-	Ports    map[string]int `json:"ports"`
+	Branch    string            `json:"branch"`
+	Worktree  string            `json:"worktree"`
+	Ports     map[string]int    `json:"ports"`
+	ProxyURLs map[string]string `json:"proxy_urls,omitempty"`
 }
 
 func newStatusCmd() *cobra.Command {
@@ -74,12 +76,25 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		assignedPorts = map[string]int{}
 	}
 
-	// Step 4: Output
+	// Step 4: Compute proxy URLs if proxy is configured
+	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
+	var proxyURLs map[string]string
+	if proxyInfo != nil && len(assignedPorts) > 0 {
+		proxyURLs = make(map[string]string)
+		for name := range assignedPorts {
+			if urlStr, urlErr := proxyInfo.BuildProxyURL(name, wtInfo.Branch); urlErr == nil {
+				proxyURLs[name] = urlStr
+			}
+		}
+	}
+
+	// Step 5: Output
 	if jsonOutput {
 		out := statusOutput{
-			Branch:   wtInfo.Branch,
-			Worktree: wtInfo.Path,
-			Ports:    assignedPorts,
+			Branch:    wtInfo.Branch,
+			Worktree:  wtInfo.Path,
+			Ports:     assignedPorts,
+			ProxyURLs: proxyURLs,
 		}
 		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
@@ -102,6 +117,18 @@ func runStatus(cmd *cobra.Command, args []string) error {
 		sort.Strings(names)
 		for _, name := range names {
 			fmt.Fprintf(w, "  %s: %d\n", name, assignedPorts[name])
+		}
+	}
+
+	if len(proxyURLs) > 0 {
+		fmt.Fprintln(w, "Proxy:")
+		names := make([]string, 0, len(proxyURLs))
+		for name := range proxyURLs {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			fmt.Fprintf(w, "  %s: %s\n", name, proxyURLs[name])
 		}
 	}
 

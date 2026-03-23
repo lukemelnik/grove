@@ -197,7 +197,7 @@ func TestResolveTemplates_Basic(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result, err := ResolveTemplates(tt.input, ports, "")
+		result, err := ResolveTemplates(tt.input, ports, "", nil)
 		if err != nil {
 			t.Errorf("ResolveTemplates(%q): unexpected error: %v", tt.input, err)
 			continue
@@ -211,14 +211,14 @@ func TestResolveTemplates_Basic(t *testing.T) {
 func TestResolveTemplates_UnknownService(t *testing.T) {
 	ports := map[string]int{"api": 4045}
 
-	_, err := ResolveTemplates("{{unknown.port}}", ports, "")
+	_, err := ResolveTemplates("{{unknown.port}}", ports, "", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown service")
 	}
 }
 
 func TestResolveTemplates_EmptyPorts(t *testing.T) {
-	result, err := ResolveTemplates("no templates", map[string]int{}, "")
+	result, err := ResolveTemplates("no templates", map[string]int{}, "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -228,12 +228,167 @@ func TestResolveTemplates_EmptyPorts(t *testing.T) {
 }
 
 func TestResolveTemplates_Branch(t *testing.T) {
-	result, err := ResolveTemplates("{{branch}}", map[string]int{}, "feat/auth")
+	result, err := ResolveTemplates("{{branch}}", map[string]int{}, "feat/auth", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if result != "feat/auth" {
 		t.Errorf("expected branch template to resolve, got %q", result)
+	}
+}
+
+func TestResolveTemplates_ProxyURL(t *testing.T) {
+	ports := map[string]int{"api": 4045}
+	pi := &ProxyInfo{
+		ProjectName:   "myapp",
+		Port:          1355,
+		HTTPS:         true,
+		DefaultBranch: "main",
+	}
+
+	result, err := ResolveTemplates("{{api.url}}", ports, "feat/auth", pi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "https://api.feat-auth.myapp.localhost:1355" {
+		t.Errorf("got %q, want %q", result, "https://api.feat-auth.myapp.localhost:1355")
+	}
+}
+
+func TestResolveTemplates_ProxyURL_DefaultBranch(t *testing.T) {
+	ports := map[string]int{"api": 4000}
+	pi := &ProxyInfo{
+		ProjectName:   "myapp",
+		Port:          1355,
+		HTTPS:         true,
+		DefaultBranch: "main",
+	}
+
+	result, err := ResolveTemplates("{{api.url}}", ports, "main", pi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "https://api.myapp.localhost:1355" {
+		t.Errorf("got %q, want %q", result, "https://api.myapp.localhost:1355")
+	}
+}
+
+func TestResolveTemplates_ProxyURL_DefaultPort(t *testing.T) {
+	ports := map[string]int{"api": 4000}
+	pi := &ProxyInfo{
+		ProjectName:   "myapp",
+		Port:          443,
+		HTTPS:         true,
+		DefaultBranch: "main",
+	}
+
+	result, err := ResolveTemplates("{{api.url}}", ports, "main", pi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "https://api.myapp.localhost" {
+		t.Errorf("got %q, want %q", result, "https://api.myapp.localhost")
+	}
+}
+
+func TestResolveTemplates_ProxyURL_HTTP(t *testing.T) {
+	ports := map[string]int{"api": 4000}
+	pi := &ProxyInfo{
+		ProjectName:   "myapp",
+		Port:          80,
+		HTTPS:         false,
+		DefaultBranch: "main",
+	}
+
+	result, err := ResolveTemplates("{{api.url}}", ports, "main", pi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "http://api.myapp.localhost" {
+		t.Errorf("got %q, want %q", result, "http://api.myapp.localhost")
+	}
+}
+
+func TestResolveTemplates_ProxyHost(t *testing.T) {
+	ports := map[string]int{"api": 4045}
+	pi := &ProxyInfo{
+		ProjectName:   "myapp",
+		Port:          1355,
+		HTTPS:         true,
+		DefaultBranch: "main",
+	}
+
+	result, err := ResolveTemplates("{{api.host}}", ports, "feat/auth", pi)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "api.feat-auth.myapp.localhost" {
+		t.Errorf("got %q, want %q", result, "api.feat-auth.myapp.localhost")
+	}
+}
+
+func TestResolveTemplates_ProxyURL_NoProxyInfo(t *testing.T) {
+	ports := map[string]int{"api": 4045}
+
+	_, err := ResolveTemplates("{{api.url}}", ports, "main", nil)
+	if err == nil {
+		t.Fatal("expected error when using proxy template without proxy info")
+	}
+	if !strings.Contains(err.Error(), "requires proxy configuration") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestResolveTemplates_ProxyHost_NoProxyInfo(t *testing.T) {
+	ports := map[string]int{"api": 4045}
+
+	_, err := ResolveTemplates("{{api.host}}", ports, "main", nil)
+	if err == nil {
+		t.Fatal("expected error when using host template without proxy info")
+	}
+	if !strings.Contains(err.Error(), "requires proxy configuration") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestProxyInfoFromConfig_Nil(t *testing.T) {
+	pi := ProxyInfoFromConfig(nil, "/path/to/project", "main")
+	if pi != nil {
+		t.Error("expected nil for nil proxy config")
+	}
+}
+
+func TestProxyInfoFromConfig_Defaults(t *testing.T) {
+	cfg := &config.ProxyConfig{HTTPS: true}
+	pi := ProxyInfoFromConfig(cfg, "/path/to/myproject", "main")
+	if pi == nil {
+		t.Fatal("expected non-nil ProxyInfo")
+	}
+	if pi.ProjectName != "myproject" {
+		t.Errorf("ProjectName = %q, want %q", pi.ProjectName, "myproject")
+	}
+	if pi.Port != 1355 {
+		t.Errorf("Port = %d, want 1355", pi.Port)
+	}
+	if !pi.HTTPS {
+		t.Error("expected HTTPS=true")
+	}
+	if pi.DefaultBranch != "main" {
+		t.Errorf("DefaultBranch = %q, want %q", pi.DefaultBranch, "main")
+	}
+}
+
+func TestProxyInfoFromConfig_Overrides(t *testing.T) {
+	cfg := &config.ProxyConfig{Name: "custom", Port: 443, HTTPS: false}
+	pi := ProxyInfoFromConfig(cfg, "/path/to/myproject", "master")
+	if pi.ProjectName != "custom" {
+		t.Errorf("ProjectName = %q, want %q", pi.ProjectName, "custom")
+	}
+	if pi.Port != 443 {
+		t.Errorf("Port = %d, want 443", pi.Port)
+	}
+	if pi.HTTPS {
+		t.Error("expected HTTPS=false")
 	}
 }
 
@@ -263,7 +418,7 @@ func TestResolve_FullPipeline(t *testing.T) {
 		"web": 3045,
 	}
 
-	result, err := Resolve(cfg, ports, "", dir)
+	result, err := Resolve(cfg, ports, "", dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -308,7 +463,7 @@ func TestResolve_Precedence(t *testing.T) {
 
 	ports := map[string]int{"api": 4045}
 
-	result, err := Resolve(cfg, ports, "", dir)
+	result, err := Resolve(cfg, ports, "", dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -330,7 +485,7 @@ func TestResolve_NoEnvFiles(t *testing.T) {
 
 	ports := map[string]int{"api": 4050}
 
-	result, err := Resolve(cfg, ports, "", "")
+	result, err := Resolve(cfg, ports, "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -345,7 +500,7 @@ func TestResolve_MissingEnvFile(t *testing.T) {
 		EnvFiles: []string{".env.nonexistent"},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "", "/tmp")
+	_, err := Resolve(cfg, map[string]int{}, "", "/tmp", nil)
 	if err == nil {
 		t.Fatal("expected error for missing env file")
 	}
@@ -358,7 +513,7 @@ func TestResolve_TemplateError(t *testing.T) {
 		},
 	}
 
-	_, err := Resolve(cfg, map[string]int{}, "", "")
+	_, err := Resolve(cfg, map[string]int{}, "", "", nil)
 	if err == nil {
 		t.Fatal("expected error for unknown service in template")
 	}
@@ -385,7 +540,7 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 		EnvFiles: []string{".env", "apps/api/.env"},
 	}
 
-	result, err := Resolve(cfg, map[string]int{}, "", dir)
+	result, err := Resolve(cfg, map[string]int{}, "", dir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -403,7 +558,7 @@ func TestResolve_MultipleEnvFiles(t *testing.T) {
 
 func TestResolve_EmptyConfig(t *testing.T) {
 	cfg := &config.Config{}
-	result, err := Resolve(cfg, map[string]int{}, "", "")
+	result, err := Resolve(cfg, map[string]int{}, "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -477,7 +632,7 @@ func TestBuildManagedEnv_SessionEnv(t *testing.T) {
 	}
 
 	ports := map[string]int{"api": 4045, "web": 3045}
-	managed, err := BuildManagedEnv(cfg, ports, "feat/auth")
+	managed, err := BuildManagedEnv(cfg, ports, "feat/auth", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -550,7 +705,7 @@ func TestManagedEnv_EnvLocalMappings(t *testing.T) {
 		"web": 3045,
 	}
 
-	managed, err := BuildManagedEnv(cfg, ports, "feat/auth")
+	managed, err := BuildManagedEnv(cfg, ports, "feat/auth", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -616,7 +771,7 @@ func TestManagedEnv_EnvLocalMappings_RoutesOrphanPortByTopLevelEnvFile(t *testin
 		},
 	}
 
-	managed, err := BuildManagedEnv(cfg, map[string]int{"api": 4045}, "feat/auth")
+	managed, err := BuildManagedEnv(cfg, map[string]int{"api": 4045}, "feat/auth", nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

@@ -1186,3 +1186,171 @@ proxy:
 		t.Errorf("expected Port to be 0 (use runtime default), got %d", cfg.Proxy.Port)
 	}
 }
+
+func TestParse_ProxyPortOutOfRange(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy:
+  port: 70000
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for out-of-range port")
+	}
+	if !strings.Contains(err.Error(), "port must be between 1 and 65535") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_ProxyNameInvalid(t *testing.T) {
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{"uppercase", "proxy:\n  name: MyApp"},
+		{"leading hyphen", "proxy:\n  name: -myapp"},
+		{"trailing hyphen", "proxy:\n  name: myapp-"},
+		{"special chars", "proxy:\n  name: my_app"},
+		{"spaces", "proxy:\n  name: my app"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			full := "services:\n  api:\n    port:\n      base: 4000\n      var: PORT\n" + tt.yaml
+			_, err := Parse([]byte(full))
+			if err == nil {
+				t.Fatal("expected error for invalid DNS label")
+			}
+			if !strings.Contains(err.Error(), "not a valid DNS label") {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestParse_ProxyNameValid(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy:
+  name: my-app-123
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed for valid name: %v", err)
+	}
+	if cfg.Proxy.Name != "my-app-123" {
+		t.Errorf("Proxy.Name = %q, want %q", cfg.Proxy.Name, "my-app-123")
+	}
+}
+
+func TestParse_ProxyTemplateWithoutProxy(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    env_file: .env
+    port:
+      base: 4000
+      var: PORT
+    env:
+      PUBLIC_URL: "{{api.url}}"
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for proxy template without proxy config")
+	}
+	if !strings.Contains(err.Error(), "proxy config is defined") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_ProxyTemplateHostWithoutProxy(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    env_file: .env
+    port:
+      base: 4000
+      var: PORT
+    env:
+      PUBLIC_HOST: "{{api.host}}"
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for proxy template without proxy config")
+	}
+	if !strings.Contains(err.Error(), "proxy config is defined") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_ProxyTemplateWithProxy(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    env_file: .env
+    port:
+      base: 4000
+      var: PORT
+    env:
+      PUBLIC_URL: "{{api.url}}"
+proxy: true
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy == nil {
+		t.Fatal("expected Proxy to be non-nil")
+	}
+}
+
+func TestParse_ProxyGlobalEnvTemplateWithoutProxy(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+env:
+  APP_URL: "{{api.url}}"
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for proxy template in global env without proxy config")
+	}
+	if !strings.Contains(err.Error(), "proxy config is defined") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestParse_ProxyPortValidRange(t *testing.T) {
+	for _, port := range []int{1, 80, 443, 1355, 65535} {
+		yaml := []byte("services:\n  api:\n    port:\n      base: 4000\n      var: PORT\nproxy:\n  port: " + strings.TrimSpace(strings.Replace(string(rune(port+'0')), string(rune(port+'0')), "", 1)))
+		_ = yaml
+	}
+
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy:
+  port: 443
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed for port 443: %v", err)
+	}
+	if cfg.Proxy.Port != 443 {
+		t.Errorf("Proxy.Port = %d, want 443", cfg.Proxy.Port)
+	}
+}

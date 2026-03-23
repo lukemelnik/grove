@@ -549,3 +549,62 @@ func TestInitCmd_EnvFileExistsDefault(t *testing.T) {
 		t.Errorf("expected env_files with .env when .env exists, got:\n%s", content)
 	}
 }
+
+func TestInitCmd_ProxyFlag(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return tmpDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"init", "--service", "api:4000:PORT", "--proxy"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("init command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".grove.yml"))
+	if err != nil {
+		t.Fatalf("failed to read .grove.yml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "proxy:") {
+		t.Errorf("expected proxy section in config, got:\n%s", content)
+	}
+}
+
+func TestInitCmd_ProxyNameAndPort(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	origGetWd := getWorkingDir
+	getWorkingDir = func() (string, error) { return tmpDir, nil }
+	defer func() { getWorkingDir = origGetWd }()
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"init", "--service", "api:4000:PORT", "--proxy-name", "myapp", "--proxy-port", "443"})
+
+	err := rootCmd.Execute()
+	if err != nil {
+		t.Fatalf("init command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(tmpDir, ".grove.yml"))
+	if err != nil {
+		t.Fatalf("failed to read .grove.yml: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "name: myapp") {
+		t.Errorf("expected proxy name: myapp, got:\n%s", content)
+	}
+	if !strings.Contains(content, "port: 443") {
+		t.Errorf("expected proxy port: 443, got:\n%s", content)
+	}
+}
