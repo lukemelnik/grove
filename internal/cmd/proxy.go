@@ -555,10 +555,9 @@ func runProxyStatus(cmd *cobra.Command, _ []string) error {
 		routes, _ = proxy.ComputeAllRoutes(entries)
 	}
 
+	// HTTPS state is not persisted — default to true since that's the proxy default.
+	// Only the running proxy knows for sure; this is a best-effort status display.
 	httpsEnabled := true
-	if port > 0 && port != 443 {
-		httpsEnabled = true
-	}
 
 	if jsonOutput {
 		routeOutputs := make([]routeOutput, 0, len(routes))

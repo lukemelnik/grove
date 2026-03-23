@@ -317,7 +317,9 @@ func proxySetup(cmd *cobra.Command, cfg *config.Config, projectRoot, branch, def
 
 	if running, _ := isProxyRunning(stateDir); !running {
 		exe, err := findExecutable()
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not find grove executable for proxy auto-start: %v\n", err)
+		} else {
 			proxyPort := proxy.DefaultProxyPort
 			if cfg.Proxy.Port != 0 {
 				proxyPort = cfg.Proxy.Port
@@ -343,9 +345,7 @@ func proxySetup(cmd *cobra.Command, cfg *config.Config, projectRoot, branch, def
 
 	registry := proxy.NewRegistry(stateDir)
 	if regErr := registry.RegisterProject(projectRoot); regErr != nil {
-		if regErr.Error() != "" {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: proxy registration: %v\n", regErr)
-		}
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: proxy registration: %v\n", regErr)
 	}
 
 	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)

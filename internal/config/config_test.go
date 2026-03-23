@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1333,24 +1334,21 @@ env:
 
 func TestParse_ProxyPortValidRange(t *testing.T) {
 	for _, port := range []int{1, 80, 443, 1355, 65535} {
-		yaml := []byte("services:\n  api:\n    port:\n      base: 4000\n      var: PORT\nproxy:\n  port: " + strings.TrimSpace(strings.Replace(string(rune(port+'0')), string(rune(port+'0')), "", 1)))
-		_ = yaml
-	}
-
-	yaml := []byte(`
+		yaml := []byte(fmt.Sprintf(`
 services:
   api:
     port:
       base: 4000
       var: PORT
 proxy:
-  port: 443
-`)
-	cfg, err := Parse(yaml)
-	if err != nil {
-		t.Fatalf("Parse failed for port 443: %v", err)
-	}
-	if cfg.Proxy.Port != 443 {
-		t.Errorf("Proxy.Port = %d, want 443", cfg.Proxy.Port)
+  port: %d
+`, port))
+		cfg, err := Parse(yaml)
+		if err != nil {
+			t.Fatalf("Parse failed for port %d: %v", port, err)
+		}
+		if cfg.Proxy.Port != port {
+			t.Errorf("Proxy.Port = %d, want %d", cfg.Proxy.Port, port)
+		}
 	}
 }
