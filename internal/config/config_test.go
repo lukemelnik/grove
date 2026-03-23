@@ -1075,3 +1075,114 @@ func TestDiscover_SymlinkDir(t *testing.T) {
 		t.Errorf("expected project root %s, got %s", realDir, projectRoot)
 	}
 }
+
+func TestParse_ProxyTrue(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy: true
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy == nil {
+		t.Fatal("expected Proxy to be non-nil for proxy: true")
+	}
+	if !cfg.Proxy.HTTPS {
+		t.Error("expected HTTPS default to be true")
+	}
+}
+
+func TestParse_ProxyFalse(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy: false
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy != nil {
+		t.Error("expected Proxy to be nil for proxy: false")
+	}
+}
+
+func TestParse_ProxyObject(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy:
+  name: myapp
+  port: 443
+  https: false
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy == nil {
+		t.Fatal("expected Proxy to be non-nil")
+	}
+	if cfg.Proxy.Name != "myapp" {
+		t.Errorf("Proxy.Name = %q, want %q", cfg.Proxy.Name, "myapp")
+	}
+	if cfg.Proxy.Port != 443 {
+		t.Errorf("Proxy.Port = %d, want 443", cfg.Proxy.Port)
+	}
+	if cfg.Proxy.HTTPS {
+		t.Error("expected HTTPS to be false")
+	}
+}
+
+func TestParse_ProxyOmitted(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy != nil {
+		t.Error("expected Proxy to be nil when omitted")
+	}
+}
+
+func TestParse_ProxyObjectDefaults(t *testing.T) {
+	yaml := []byte(`
+services:
+  api:
+    port:
+      base: 4000
+      var: PORT
+proxy:
+  name: myapp
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("Parse failed: %v", err)
+	}
+	if cfg.Proxy == nil {
+		t.Fatal("expected Proxy to be non-nil")
+	}
+	if !cfg.Proxy.HTTPS {
+		t.Error("expected HTTPS default to be true in object form")
+	}
+	if cfg.Proxy.Port != 0 {
+		t.Errorf("expected Port to be 0 (use runtime default), got %d", cfg.Proxy.Port)
+	}
+}

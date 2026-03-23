@@ -58,6 +58,9 @@ type Config struct {
 
 	// Hooks defines lifecycle hooks (scripts to run at specific points).
 	Hooks *HooksConfig `yaml:"hooks,omitempty"`
+
+	// Proxy defines optional HTTPS reverse proxy configuration.
+	Proxy *ProxyConfig `yaml:"proxy,omitempty"`
 }
 
 // HooksConfig defines lifecycle hooks.
@@ -65,6 +68,54 @@ type HooksConfig struct {
 	// PostCreate lists scripts to run after worktree creation.
 	// Paths are relative to the project root and cannot escape it.
 	PostCreate []string `yaml:"post_create,omitempty"`
+}
+
+// ProxyConfig defines the HTTPS reverse proxy settings.
+type ProxyConfig struct {
+	// Name is the project name used in hostnames (defaults to repo directory name).
+	Name string `yaml:"name,omitempty"`
+
+	// Port is the proxy listen port (default: 1355).
+	Port int `yaml:"port,omitempty"`
+
+	// HTTPS enables TLS termination (default: true).
+	HTTPS bool `yaml:"https,omitempty"`
+
+	disabled bool
+}
+
+// IsDisabled returns true when the proxy was explicitly set to false.
+func (pc *ProxyConfig) IsDisabled() bool {
+	return pc != nil && pc.disabled
+}
+
+// UnmarshalYAML supports both boolean and object forms for proxy config.
+//
+//	proxy: true       → enabled with defaults
+//	proxy: false      → disabled (nil pointer in Config)
+//	proxy:            → enabled with overrides
+//	  name: myapp
+func (pc *ProxyConfig) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		var enabled bool
+		if err := value.Decode(&enabled); err != nil {
+			return fmt.Errorf("proxy must be a boolean or an object: %w", err)
+		}
+		if !enabled {
+			pc.disabled = true
+			return nil
+		}
+		pc.HTTPS = true
+		return nil
+	}
+
+	type proxyAlias ProxyConfig
+	alias := proxyAlias{HTTPS: true}
+	if err := value.Decode(&alias); err != nil {
+		return fmt.Errorf("parsing proxy config: %w", err)
+	}
+	*pc = ProxyConfig(alias)
+	return nil
 }
 
 // Service represents a service with a base port, an env file, and optional env vars.
@@ -260,6 +311,7 @@ func LoadNoValidate(path string) (*Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	cfg.normalizeProxy()
 	cfg.ApplyProjectDefaults(filepath.Dir(path))
 	return &cfg, nil
 }
@@ -271,11 +323,20 @@ func Parse(data []byte) (*Config, error) {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
+	cfg.normalizeProxy()
+
 	if err := Validate(&cfg); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+// normalizeProxy converts "proxy: false" (disabled flag) into a nil pointer.
+func (cfg *Config) normalizeProxy() {
+	if cfg.Proxy.IsDisabled() {
+		cfg.Proxy = nil
+	}
 }
 
 // AllEnvFiles returns the union of top-level env_files and service-level env_file
