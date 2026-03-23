@@ -372,6 +372,100 @@ func TestIsWebSocketUpgrade(t *testing.T) {
 	}
 }
 
+func TestServer_ServeWithPreOpenedListener(t *testing.T) {
+	backendAddr := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "served via pre-opened listener")
+	}))
+
+	rt := NewRouteTable()
+	rt.Update([]Route{
+		{Hostname: "api.myapp.localhost", Target: backendAddr, Project: "myapp", Service: "api", Branch: "main"},
+	})
+
+	srv := NewServer(ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSEnabled: false,
+		RouteTable: rt,
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/", ln.Addr().String()), nil)
+	if err != nil {
+		t.Fatalf("creating request: %v", err)
+	}
+	req.Host = "api.myapp.localhost"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "pre-opened listener") {
+		t.Errorf("unexpected body: %s", body)
+	}
+}
+
+func TestServer_CaseInsensitiveHostRouting(t *testing.T) {
+	backendAddr := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "routed")
+	}))
+
+	rt := NewRouteTable()
+	rt.Update([]Route{
+		{Hostname: "api.myapp.localhost", Target: backendAddr, Project: "myapp", Service: "api", Branch: "main"},
+	})
+
+	srv := NewServer(ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSEnabled: false,
+		RouteTable: rt,
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	hosts := []string{
+		"api.myapp.localhost",
+		"API.myapp.localhost",
+		"Api.MyApp.Localhost",
+	}
+
+	for _, host := range hosts {
+		req, err := http.NewRequest("GET", fmt.Sprintf("http://%s/", ln.Addr().String()), nil)
+		if err != nil {
+			t.Fatalf("creating request: %v", err)
+		}
+		req.Host = host
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("request with Host=%q failed: %v", host, err)
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != 200 {
+			t.Errorf("Host=%q: status = %d, want 200", host, resp.StatusCode)
+		}
+	}
+}
+
 func TestServer_GracefulShutdown(t *testing.T) {
 	rt := NewRouteTable()
 	srv := NewServer(ServerConfig{

@@ -259,6 +259,32 @@ func TestRouteTable_LookupAndUpdate(t *testing.T) {
 	}
 }
 
+func TestRouteTable_LookupCaseInsensitive(t *testing.T) {
+	rt := NewRouteTable()
+
+	rt.Update([]Route{
+		{Hostname: "api.myapp.localhost", Target: "127.0.0.1:4000", Project: "myapp", Service: "api", Branch: "main"},
+	})
+
+	cases := []string{
+		"api.myapp.localhost",
+		"API.myapp.localhost",
+		"Api.MyApp.Localhost",
+		"API.MYAPP.LOCALHOST",
+	}
+
+	for _, hostname := range cases {
+		r, ok := rt.Lookup(hostname)
+		if !ok {
+			t.Errorf("Lookup(%q) = not found, want match", hostname)
+			continue
+		}
+		if r.Target != "127.0.0.1:4000" {
+			t.Errorf("Lookup(%q) target = %q, want %q", hostname, r.Target, "127.0.0.1:4000")
+		}
+	}
+}
+
 func TestRouteTable_UpdateReplacesAll(t *testing.T) {
 	rt := NewRouteTable()
 
