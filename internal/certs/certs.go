@@ -72,6 +72,10 @@ func (m *Manager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, 
 		hostname = "localhost"
 	}
 
+	if !validHostname(hostname) {
+		return nil, fmt.Errorf("invalid hostname: %q", hostname)
+	}
+
 	m.mu.Lock()
 	if cert, ok := m.cache[hostname]; ok {
 		if cert.Leaf != nil && !needsRenewal(cert.Leaf) {
@@ -249,6 +253,18 @@ func needsRenewal(cert *x509.Certificate) bool {
 		return true
 	}
 	return time.Now().Add(renewalWindow).After(cert.NotAfter)
+}
+
+func validHostname(hostname string) bool {
+	if len(hostname) == 0 || len(hostname) > 253 {
+		return false
+	}
+	for _, c := range hostname {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 func generateSerialNumber() (*big.Int, error) {

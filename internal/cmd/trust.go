@@ -80,15 +80,18 @@ func runTrust(cmd *cobra.Command, _ []string) error {
 
 	caCertPath := filepath.Join(stateDir, certs.CACertFile)
 
-	if _, err := os.Stat(caCertPath); os.IsNotExist(err) {
-		msg := "CA certificate does not exist yet — run grove proxy start first to generate certificates"
-		if shouldOutputJSON(cmd) {
-			out := trustOutput{Message: msg}
-			data, _ := json.Marshal(out)
-			fmt.Fprintln(cmd.ErrOrStderr(), string(data))
-			return &reportedError{cause: fmt.Errorf("%s", msg)}
+	if _, err := os.Stat(caCertPath); err != nil {
+		if os.IsNotExist(err) {
+			msg := "CA certificate does not exist yet — run grove proxy start first to generate certificates"
+			if shouldOutputJSON(cmd) {
+				out := trustOutput{Message: msg}
+				data, _ := json.Marshal(out)
+				fmt.Fprintln(cmd.ErrOrStderr(), string(data))
+				return &reportedError{cause: fmt.Errorf("%s", msg)}
+			}
+			return fmt.Errorf("%s", msg)
 		}
-		return fmt.Errorf("%s", msg)
+		return outputError(cmd, fmt.Errorf("checking CA certificate: %w", err))
 	}
 
 	if check {
