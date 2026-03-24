@@ -703,6 +703,13 @@ grove trust --check     # Check if CA is trusted (exit code 0/1)
 grove trust --remove    # Remove CA from keychain
 ```
 
+**DNS resolution:** Chrome, Firefox, and Edge resolve `*.localhost` to `127.0.0.1` automatically ([RFC 6761](https://datatracker.ietf.org/doc/html/rfc6761)). Safari and CLI tools (`curl`, `ping`) rely on `/etc/hosts` instead. Use `grove proxy hosts` to sync:
+
+```bash
+sudo grove proxy hosts           # Sync current routes to /etc/hosts
+sudo grove proxy hosts --clean   # Remove grove entries from /etc/hosts
+```
+
 ### Env Templates
 
 When proxy is configured, two additional template variables are available:

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/lukemelnik/grove/internal/certs"
 	"github.com/lukemelnik/grove/internal/config"
 	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/ports"
@@ -15,10 +16,11 @@ import (
 
 // statusOutput is the structured JSON output for grove status --json.
 type statusOutput struct {
-	Branch    string            `json:"branch"`
-	Worktree  string            `json:"worktree"`
-	Ports     map[string]int    `json:"ports"`
-	ProxyURLs map[string]string `json:"proxy_urls,omitempty"`
+	Branch       string            `json:"branch"`
+	Worktree     string            `json:"worktree"`
+	Ports        map[string]int    `json:"ports"`
+	ProxyURLs    map[string]string `json:"proxy_urls,omitempty"`
+	ProxyRunning *bool             `json:"proxy_running,omitempty"`
 }
 
 func newStatusCmd() *cobra.Command {
@@ -79,6 +81,7 @@ func runStatus(cmd *cobra.Command, args []string) error {
 	// Step 4: Compute proxy URLs if proxy is configured
 	proxyInfo := env.ProxyInfoFromConfig(cfg.Proxy, projectRoot, defaultBranch)
 	var proxyURLs map[string]string
+	var proxyRunning *bool
 	if proxyInfo != nil && len(assignedPorts) > 0 {
 		proxyURLs = make(map[string]string)
 		for name := range assignedPorts {
@@ -86,15 +89,22 @@ func runStatus(cmd *cobra.Command, args []string) error {
 				proxyURLs[name] = urlStr
 			}
 		}
+
+		// Check if the proxy daemon is actually running
+		if stateDir, err := certs.DefaultStateDir(); err == nil {
+			running, _ := isProxyRunning(stateDir)
+			proxyRunning = &running
+		}
 	}
 
 	// Step 5: Output
 	if jsonOutput {
 		out := statusOutput{
-			Branch:    wtInfo.Branch,
-			Worktree:  wtInfo.Path,
-			Ports:     assignedPorts,
-			ProxyURLs: proxyURLs,
+			Branch:       wtInfo.Branch,
+			Worktree:     wtInfo.Path,
+			Ports:        assignedPorts,
+			ProxyURLs:    proxyURLs,
+			ProxyRunning: proxyRunning,
 		}
 		data, err := json.MarshalIndent(out, "", "  ")
 		if err != nil {
@@ -122,6 +132,9 @@ func runStatus(cmd *cobra.Command, args []string) error {
 
 	if len(proxyURLs) > 0 {
 		fmt.Fprintln(w, "Proxy:")
+		if proxyRunning != nil && !*proxyRunning {
+			fmt.Fprintln(w, "  ⚠ proxy is not running — start with: grove proxy start -d")
+		}
 		names := make([]string, 0, len(proxyURLs))
 		for name := range proxyURLs {
 			names = append(names, name)

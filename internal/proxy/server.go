@@ -117,11 +117,17 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request, route Route
 		Host:   route.Target,
 	}
 
+	origin := r.Header.Get("Origin")
+
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
 			req.URL.Scheme = targetURL.Scheme
 			req.URL.Host = targetURL.Host
-			req.Host = r.Host
+
+			// Send Host: localhost to the backend so dev servers (Vite,
+			// Next.js, etc.) don't reject the request via allowedHosts.
+			// The original hostname is preserved in X-Forwarded-Host.
+			req.Host = "localhost"
 
 			req.Header.Set("X-Forwarded-For", clientIP(r))
 			if s.tlsEnabled {
@@ -130,6 +136,21 @@ func (s *Server) handleProxy(w http.ResponseWriter, r *http.Request, route Route
 				req.Header.Set("X-Forwarded-Proto", "http")
 			}
 			req.Header.Set("X-Forwarded-Host", r.Host)
+		},
+		ModifyResponse: func(resp *http.Response) error {
+			if isLocalhostOrigin(origin) {
+				resp.Header.Set("Access-Control-Allow-Origin", origin)
+				resp.Header.Set("Access-Control-Allow-Credentials", "true")
+
+				// Ensure browsers see the CORS headers we set
+				if resp.Header.Get("Access-Control-Allow-Methods") == "" {
+					resp.Header.Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+				}
+				if resp.Header.Get("Access-Control-Allow-Headers") == "" {
+					resp.Header.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				}
+			}
+			return nil
 		},
 		ErrorHandler: func(rw http.ResponseWriter, req *http.Request, err error) {
 			s.handleBadGateway(rw, req, route, err)
@@ -168,6 +189,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request, route R
 		r.Header.Set("X-Forwarded-Proto", "http")
 	}
 	r.Header.Set("X-Forwarded-Host", r.Host)
+	r.Host = "localhost" // same rewrite as HTTP proxy
 
 	if err := r.Write(targetConn); err != nil {
 		return
@@ -290,4 +312,25 @@ func clientIP(r *http.Request) string {
 		return r.RemoteAddr
 	}
 	return ip
+}
+
+// isLocalhostOrigin checks whether an Origin header value is a *.localhost
+// URL. Used to decide whether the proxy should inject CORS headers so that
+// cross-service requests through the proxy work without backend config changes.
+func isLocalhostOrigin(origin string) bool {
+	if origin == "" {
+		return false
+	}
+	// Origin format: scheme://host[:port]
+	// Extract the host portion after "://"
+	idx := strings.Index(origin, "://")
+	if idx == -1 {
+		return false
+	}
+	hostPort := origin[idx+3:]
+	host := hostPort
+	if colonIdx := strings.LastIndex(hostPort, ":"); colonIdx != -1 {
+		host = hostPort[:colonIdx]
+	}
+	return host == "localhost" || strings.HasSuffix(host, ".localhost")
 }

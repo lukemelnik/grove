@@ -16,6 +16,7 @@ import (
 
 	"github.com/lukemelnik/grove/internal/certs"
 	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/hosts"
 	"github.com/lukemelnik/grove/internal/proxy"
 
 	"github.com/spf13/cobra"
@@ -43,6 +44,8 @@ Commands:
   grove proxy status             Show proxy state, registered projects, and active routes
   grove proxy projects           List registered projects
   grove proxy unregister [name]  Remove a project from the proxy
+  grove proxy hosts              Sync route hostnames to /etc/hosts
+  grove proxy hosts --clean      Remove grove entries from /etc/hosts
   grove proxy clean              Stop proxy and remove all state`,
 	}
 
@@ -52,6 +55,7 @@ Commands:
 		newProxyStatusCmd(),
 		newProxyProjectsCmd(),
 		newProxyUnregisterCmd(),
+		newProxyHostsCmd(),
 		newProxyCleanCmd(),
 	)
 
@@ -125,6 +129,91 @@ With a name argument, removes the project with that name.`,
 	}
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 	return cmd
+}
+
+func newProxyHostsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "hosts",
+		Short: "Sync route hostnames to /etc/hosts",
+		Long: `Add or remove grove route hostnames in /etc/hosts.
+
+Chrome, Firefox, and Edge resolve *.localhost automatically.
+Safari and CLI tools (curl, ping) rely on /etc/hosts.
+
+  sudo grove proxy hosts           Sync current routes to /etc/hosts
+  sudo grove proxy hosts --clean   Remove grove entries from /etc/hosts
+
+Requires root to write /etc/hosts.`,
+		Args: cobra.NoArgs,
+		RunE: runProxyHosts,
+	}
+	cmd.Flags().Bool("clean", false, "remove grove entries from /etc/hosts")
+	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
+	return cmd
+}
+
+func runProxyHosts(cmd *cobra.Command, _ []string) error {
+	clean, _ := cmd.Flags().GetBool("clean")
+	jsonOutput := shouldOutputJSON(cmd)
+
+	if clean {
+		if ok := hosts.Clean(); !ok {
+			return outputError(cmd, fmt.Errorf("failed to update /etc/hosts — run with sudo"))
+		}
+		if jsonOutput {
+			data, _ := json.Marshal(map[string]string{
+				"action":  "cleaned",
+				"message": "grove entries removed from /etc/hosts",
+			})
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
+		}
+		fmt.Fprintln(cmd.OutOrStdout(), "Removed grove entries from /etc/hosts")
+		return nil
+	}
+
+	// Compute current routes
+	stateDir, err := proxyStateDir()
+	if err != nil {
+		return outputError(cmd, err)
+	}
+
+	registry := proxy.NewRegistry(stateDir)
+	entries, err := registry.LoadAndPrune()
+	if err != nil {
+		return outputError(cmd, fmt.Errorf("loading registry: %w", err))
+	}
+
+	var routes []proxy.Route
+	if len(entries) > 0 {
+		routes, _ = proxy.ComputeAllRoutes(entries)
+	}
+
+	hostnames := make([]string, len(routes))
+	for i, r := range routes {
+		hostnames[i] = r.Hostname
+	}
+
+	if ok := hosts.Sync(hostnames); !ok {
+		return outputError(cmd, fmt.Errorf("failed to update /etc/hosts — run with sudo"))
+	}
+
+	if jsonOutput {
+		data, _ := json.Marshal(map[string]interface{}{
+			"action":    "synced",
+			"hostnames": hostnames,
+			"message":   fmt.Sprintf("synced %d hostname(s) to /etc/hosts", len(hostnames)),
+		})
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+		return nil
+	}
+
+	w := cmd.OutOrStdout()
+	fmt.Fprintf(w, "Synced %d hostname(s) to /etc/hosts:\n", len(hostnames))
+	for _, h := range hostnames {
+		fmt.Fprintf(w, "  127.0.0.1 %s\n", h)
+	}
+	return nil
 }
 
 func newProxyCleanCmd() *cobra.Command {
@@ -324,6 +413,10 @@ func runProxyForeground(cmd *cobra.Command, stateDir string, port int, enableHTT
 	}
 	routeTable.Update(routes)
 
+	// Initial hosts sync — best-effort (succeeds if started with sudo)
+	hostnames := routeHostnames(routes)
+	hostsOK := hosts.Sync(hostnames)
+
 	var certMgr *certs.Manager
 	if enableHTTPS {
 		certMgr, err = certs.EnsureCerts(stateDir)
@@ -357,6 +450,7 @@ func runProxyForeground(cmd *cobra.Command, stateDir string, port int, enableHTT
 	go func() {
 		<-sigCh
 		cancel()
+		hosts.Clean() // best-effort cleanup on shutdown
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		srv.Shutdown(shutdownCtx)
@@ -369,17 +463,23 @@ func runProxyForeground(cmd *cobra.Command, stateDir string, port int, enableHTT
 
 	if jsonOutput {
 		data, _ := json.Marshal(map[string]interface{}{
-			"action":  "started",
-			"pid":     os.Getpid(),
-			"port":    port,
-			"https":   enableHTTPS,
-			"routes":  len(routes),
-			"message": fmt.Sprintf("proxy started on %s://127.0.0.1:%d", proto, port),
+			"action":    "started",
+			"pid":       os.Getpid(),
+			"port":      port,
+			"https":     enableHTTPS,
+			"routes":    len(routes),
+			"hosts_sync": hostsOK,
+			"message":   fmt.Sprintf("proxy started on %s://127.0.0.1:%d", proto, port),
 		})
 		fmt.Fprintln(cmd.OutOrStdout(), string(data))
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Proxy started on %s://127.0.0.1:%d (PID %d)\n", proto, port, os.Getpid())
 		fmt.Fprintf(cmd.OutOrStdout(), "Active routes: %d\n", len(routes))
+		if hostsOK {
+			fmt.Fprintf(cmd.OutOrStdout(), "Hosts: synced %d hostname(s) to /etc/hosts\n", len(hostnames))
+		} else if len(routes) > 0 {
+			fmt.Fprintln(cmd.OutOrStdout(), "Hosts: /etc/hosts not writable — run with sudo, or: sudo grove proxy hosts")
+		}
 	}
 
 	err = srv.Serve(ln)
@@ -422,8 +522,17 @@ func watchAndRebuildRoutes(ctx context.Context, registry *proxy.Registry, routeT
 				continue
 			}
 			routeTable.Update(routes)
+			hosts.Sync(routeHostnames(routes)) // best-effort
 		}
 	}
+}
+
+func routeHostnames(routes []proxy.Route) []string {
+	hostnames := make([]string, len(routes))
+	for i, r := range routes {
+		hostnames[i] = r.Hostname
+	}
+	return hostnames
 }
 
 func computeWatchHash(stateDir string, registry *proxy.Registry) string {

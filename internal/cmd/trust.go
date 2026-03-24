@@ -7,18 +7,24 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/lukemelnik/grove/internal/certs"
 	"github.com/spf13/cobra"
 )
 
 var trustAddCA = func(certPath string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("determining home directory: %w", err)
+	if os.Getuid() == 0 {
+		// Running as root (sudo): add to System keychain with admin trust domain
+		cmd := exec.Command("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", "/Library/Keychains/System.keychain", certPath)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
 	}
-	keychain := filepath.Join(home, "Library", "Keychains", "login.keychain-db")
-	cmd := exec.Command("security", "add-trusted-cert", "-d", "-r", "trustRoot", "-k", keychain, certPath)
+	// Normal user: add to login keychain without -d flag.
+	// macOS will show a GUI auth dialog. Chrome respects user-domain trust.
+	keychain := loginKeychainPath()
+	cmd := exec.Command("security", "add-trusted-cert", "-r", "trustRoot", "-k", keychain, certPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
@@ -29,6 +35,20 @@ var trustRemoveCA = func(certPath string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func loginKeychainPath() string {
+	out, err := exec.Command("security", "default-keychain").Output()
+	if err == nil {
+		// Output looks like:    "/Users/foo/Library/Keychains/login.keychain-db"
+		s := strings.TrimSpace(string(out))
+		s = strings.Trim(s, "\"")
+		if s != "" {
+			return s
+		}
+	}
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, "Library", "Keychains", "login.keychain-db")
 }
 
 var trustCheckCA = func() bool {

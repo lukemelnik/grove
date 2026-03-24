@@ -136,7 +136,7 @@ func computeProjectRoutes(entry ProjectEntry) ([]Route, error) {
 
 			routes = append(routes, Route{
 				Hostname: hostname,
-				Target:   fmt.Sprintf("127.0.0.1:%d", port),
+				Target:   fmt.Sprintf("localhost:%d", port),
 				Project:  projectName,
 				Service:  svcName,
 				Branch:   wt.Branch,

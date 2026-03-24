@@ -466,6 +466,151 @@ func TestServer_CaseInsensitiveHostRouting(t *testing.T) {
 	}
 }
 
+func TestServer_HostRewrite(t *testing.T) {
+	var gotHost string
+	backendAddr := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHost = r.Host
+		w.WriteHeader(200)
+	}))
+
+	rt := NewRouteTable()
+	rt.Update([]Route{
+		{Hostname: "web.feat-auth.myapp.localhost", Target: backendAddr, Project: "myapp", Service: "web", Branch: "feat-auth"},
+	})
+
+	srv := NewServer(ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSEnabled: false,
+		RouteTable: rt,
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	go srv.httpServer.Serve(ln)
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/", ln.Addr().String()), nil)
+	req.Host = "web.feat-auth.myapp.localhost"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	if gotHost != "localhost" {
+		t.Errorf("backend saw Host = %q, want %q", gotHost, "localhost")
+	}
+}
+
+func TestServer_CORSHeaders(t *testing.T) {
+	backendAddr := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Backend sets a different CORS origin (simulating typical dev config)
+		w.Header().Set("Access-Control-Allow-Origin", "http://localhost:3000")
+		w.WriteHeader(200)
+	}))
+
+	rt := NewRouteTable()
+	rt.Update([]Route{
+		{Hostname: "api.myapp.localhost", Target: backendAddr, Project: "myapp", Service: "api", Branch: "main"},
+	})
+
+	srv := NewServer(ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSEnabled: false,
+		RouteTable: rt,
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	go srv.httpServer.Serve(ln)
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/", ln.Addr().String()), nil)
+	req.Host = "api.myapp.localhost"
+	req.Header.Set("Origin", "https://web.myapp.localhost:1355")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Proxy should rewrite CORS to match the requesting origin
+	got := resp.Header.Get("Access-Control-Allow-Origin")
+	if got != "https://web.myapp.localhost:1355" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, "https://web.myapp.localhost:1355")
+	}
+	if resp.Header.Get("Access-Control-Allow-Credentials") != "true" {
+		t.Error("Access-Control-Allow-Credentials not set to true")
+	}
+}
+
+func TestServer_CORSHeaders_NonLocalhost(t *testing.T) {
+	backendAddr := startBackend(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "https://example.com")
+		w.WriteHeader(200)
+	}))
+
+	rt := NewRouteTable()
+	rt.Update([]Route{
+		{Hostname: "api.myapp.localhost", Target: backendAddr, Project: "myapp", Service: "api", Branch: "main"},
+	})
+
+	srv := NewServer(ServerConfig{
+		ListenAddr: "127.0.0.1:0",
+		TLSEnabled: false,
+		RouteTable: rt,
+	})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listening: %v", err)
+	}
+	go srv.httpServer.Serve(ln)
+	t.Cleanup(func() { srv.Shutdown(context.Background()) })
+
+	req, _ := http.NewRequest("GET", fmt.Sprintf("http://%s/", ln.Addr().String()), nil)
+	req.Host = "api.myapp.localhost"
+	req.Header.Set("Origin", "https://evil.com")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	// Proxy should NOT rewrite CORS for non-localhost origins
+	got := resp.Header.Get("Access-Control-Allow-Origin")
+	if got != "https://example.com" {
+		t.Errorf("Access-Control-Allow-Origin = %q, want backend's original %q", got, "https://example.com")
+	}
+}
+
+func TestIsLocalhostOrigin(t *testing.T) {
+	tests := []struct {
+		origin string
+		want   bool
+	}{
+		{"https://web.myapp.localhost:1355", true},
+		{"http://localhost:3000", true},
+		{"https://api.feat-auth.myapp.localhost:1355", true},
+		{"https://example.com", false},
+		{"https://notlocalhost.com", false},
+		{"", false},
+		{"garbage", false},
+	}
+	for _, tt := range tests {
+		if got := isLocalhostOrigin(tt.origin); got != tt.want {
+			t.Errorf("isLocalhostOrigin(%q) = %v, want %v", tt.origin, got, tt.want)
+		}
+	}
+}
+
 func TestServer_GracefulShutdown(t *testing.T) {
 	rt := NewRouteTable()
 	srv := NewServer(ServerConfig{
