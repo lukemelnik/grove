@@ -23,7 +23,13 @@ Safety checks (skipped with --force):
   - Open PRs: checks via gh CLI (if available)
   - Unpushed commits: blocks if the branch has local commits not on the remote
   - Never-pushed branches: blocks if the branch has no remote tracking branch
-  - Uncommitted changes: git refuses to remove dirty worktrees`,
+  - Uncommitted changes: git refuses to remove dirty worktrees
+
+Smart merge detection:
+  - If the remote branch was deleted (e.g. after a PR merge), the branch is
+    treated as merged and deletion proceeds without --force.
+  - If the branch has unpushed commits but all patches are already in the
+    default branch (e.g. merged via rebase), deletion proceeds without --force.`,
 		Args: cobra.ExactArgs(1),
 		RunE: runDelete,
 	}
@@ -96,12 +102,25 @@ func runDelete(cmd *cobra.Command, args []string) error {
 			switch status {
 			case worktree.UnpushedNoRemote:
 				return fmt.Errorf("branch %q has never been pushed to a remote — use --force to delete anyway, or push first with: git push -u origin %s", branch, branch)
+			case worktree.UnpushedGone:
+				// Remote tracking branch was deleted — likely merged via PR.
+				// Safe to proceed without --force.
+				fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted (likely merged)\n")
 			case worktree.UnpushedCommits:
-				noun := "commit"
-				if count > 1 {
-					noun = "commits"
+				// Before blocking, check if the branch content is already in the
+				// default branch (handles rebase merges where commit SHAs differ
+				// but the patches are identical).
+				defaultBranch := wtMgr.DefaultBranch()
+				contentMerged, cherryErr := wtMgr.IsBranchContentMerged(branch, defaultBranch)
+				if cherryErr == nil && contentMerged {
+					fmt.Fprintf(cmd.ErrOrStderr(), "Note: branch content already in %s (merged via rebase)\n", defaultBranch)
+				} else {
+					noun := "commit"
+					if count > 1 {
+						noun = "commits"
+					}
+					return fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)
 				}
-				return fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)
 			}
 		}
 	}

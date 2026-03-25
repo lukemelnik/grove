@@ -953,3 +953,90 @@ func TestCheckUnpushed_AllPushed(t *testing.T) {
 		t.Errorf("expected count 0, got %d", count)
 	}
 }
+
+func TestCheckUnpushed_Gone(t *testing.T) {
+	mock := newMockGitRunner()
+	// Remote ref is gone
+	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "", fmt.Errorf("not found"))
+	// But branch config still has upstream tracking (was pushed before)
+	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedGone {
+		t.Errorf("expected UnpushedGone, got %d", status)
+	}
+	if count != 0 {
+		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+func TestIsBranchContentMerged_AllApplied(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("cherry main feat/test", "- abc123\n- def456", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	merged, err := mgr.IsBranchContentMerged("feat/test", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !merged {
+		t.Error("expected merged=true when all patches are applied")
+	}
+}
+
+func TestIsBranchContentMerged_HasUnique(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("cherry main feat/test", "- abc123\n+ def456", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	merged, err := mgr.IsBranchContentMerged("feat/test", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if merged {
+		t.Error("expected merged=false when some patches are unique")
+	}
+}
+
+func TestIsBranchContentMerged_AllUnique(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("cherry main feat/test", "+ abc123\n+ def456", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	merged, err := mgr.IsBranchContentMerged("feat/test", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if merged {
+		t.Error("expected merged=false when all patches are unique")
+	}
+}
+
+func TestIsBranchContentMerged_Empty(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("cherry main feat/test", "", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	merged, err := mgr.IsBranchContentMerged("feat/test", "main")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !merged {
+		t.Error("expected merged=true when branch has no unique commits")
+	}
+}
+
+func TestIsBranchContentMerged_Error(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("cherry main feat/test", "", fmt.Errorf("unknown revision"))
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	_, err := mgr.IsBranchContentMerged("feat/test", "main")
+	if err == nil {
+		t.Error("expected error when git cherry fails")
+	}
+}

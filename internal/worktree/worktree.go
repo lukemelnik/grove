@@ -519,17 +519,31 @@ const (
 	UnpushedNone UnpushedStatus = iota
 	// UnpushedCommits means the branch has commits not on the remote.
 	UnpushedCommits
-	// UnpushedNoRemote means the branch has no remote tracking branch.
+	// UnpushedNoRemote means the branch has no remote tracking branch
+	// and was never configured to track one (truly never pushed).
 	UnpushedNoRemote
+	// UnpushedGone means the branch had a remote tracking branch that was
+	// deleted (e.g. after a PR was merged and the remote branch was auto-deleted).
+	UnpushedGone
 )
 
 // CheckUnpushed checks if a branch has unpushed commits.
-// Returns the status and the number of unpushed commits (0 for NoRemote).
+// Returns the status and the number of unpushed commits (0 for NoRemote/Gone).
+//
+// When the remote tracking ref is missing, it distinguishes between branches
+// that were never pushed (UnpushedNoRemote) and branches whose remote was
+// deleted after a merge (UnpushedGone) by checking git branch config.
 func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
 	// Check if there's a remote tracking branch
 	_, err := m.git.Run("rev-parse", "--verify", "refs/remotes/origin/"+branch)
 	if err != nil {
-		// No remote tracking branch — the branch was never pushed
+		// No remote tracking ref. Check if the branch previously had upstream
+		// config — this means it was pushed/tracked before but the remote branch
+		// was deleted (e.g. GitHub auto-delete after PR merge).
+		remote, configErr := m.git.Run("config", "--get", "branch."+branch+".remote")
+		if configErr == nil && strings.TrimSpace(remote) != "" {
+			return UnpushedGone, 0, nil
+		}
 		return UnpushedNoRemote, 0, nil
 	}
 
@@ -545,6 +559,35 @@ func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
 		return UnpushedCommits, count, nil
 	}
 	return UnpushedNone, 0, nil
+}
+
+// IsBranchContentMerged checks if all of a branch's patches are already applied
+// in the target branch, even if the commit SHAs differ (as happens with rebase
+// or cherry-pick merges). It uses git cherry which compares patch-ids.
+//
+// Returns true if every commit on branch (not in "into") has a matching patch
+// in "into", or if the branch has no unique commits at all.
+//
+// Note: this reliably detects rebase merges but may not detect squash merges
+// (where multiple commits are combined into one with a different patch-id).
+func (m *Manager) IsBranchContentMerged(branch, into string) (bool, error) {
+	out, err := m.git.Run("cherry", into, branch)
+	if err != nil {
+		return false, err
+	}
+	trimmed := strings.TrimSpace(out)
+	if trimmed == "" {
+		// No unique commits — branch is same as or ancestor of target
+		return true, nil
+	}
+	for _, line := range strings.Split(trimmed, "\n") {
+		if strings.HasPrefix(line, "+ ") {
+			// This commit's patch is NOT in the target branch
+			return false, nil
+		}
+	}
+	// All commits prefixed with "- " — all patches already applied
+	return true, nil
 }
 
 // GoneBranches returns branch names whose remote tracking branch has been deleted.
