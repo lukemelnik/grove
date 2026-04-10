@@ -22,19 +22,31 @@ grove create feat/auth
 ## Install
 
 ```bash
-# One-line install for Go users
-go install github.com/lukemelnik/grove/cmd/grove@latest
-
-# Or build locally
-git clone https://github.com/lukemelnik/grove.git
-cd grove
-make install
+# Recommended — downloads the latest binary from GitHub Releases
+curl -sSL https://raw.githubusercontent.com/lukemelnik/grove/main/scripts/install.sh | bash
 ```
 
-Prebuilt archives are also published on each GitHub release:
-<https://github.com/lukemelnik/grove/releases/latest>
+Installs to `/usr/local/bin` by default. Override with `GROVE_INSTALL_DIR`:
+
+```bash
+GROVE_INSTALL_DIR=~/.local/bin curl -sSL https://raw.githubusercontent.com/lukemelnik/grove/main/scripts/install.sh | bash
+```
+
+### Other methods
+
+```bash
+# Go users
+go install github.com/lukemelnik/grove/cmd/grove@latest
+
+# Build from source
+git clone https://github.com/lukemelnik/grove.git
+cd grove
+make install    # symlinks to ~/.local/bin
+```
 
 `go install` writes `grove` to `$GOBIN` or `$GOPATH/bin`, so make sure that directory is on your `PATH`.
+
+Prebuilt archives for all platforms are published on each [GitHub Release](https://github.com/lukemelnik/grove/releases/latest).
 
 ### Shell Completions
 
@@ -670,7 +682,7 @@ Homebrew is intentionally not part of the first release cut. A tap is convenient
 
 - Git
 - tmux 3.2+ (for workspace features)
-- Go 1.25+ (for source builds or `go install`)
+- Go 1.25+ (only for `go install` or building from source)
 - `gh` CLI (optional — PR safety checks on `grove delete`)
 
 ## License
