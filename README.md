@@ -68,9 +68,10 @@ grove completion fish > ~/.config/fish/completions/grove.fish
 cd your-project
 grove init          # Interactive setup — creates .grove.yml
 grove create feat/auth   # Create worktree + workspace
-grove create feat/billing
+grove create feat/billing --no-open  # Provision without opening tmux
 grove list               # See all active worktrees and ports
-grove attach feat/auth   # Jump back to an existing workspace
+grove open feat/auth     # Open or restore the full tmux workspace
+grove enter feat/billing # Enter a worktree in the current pane
 grove delete feat/billing # Clean up when done
 grove clean              # Remove worktrees for merged/deleted branches
 ```
@@ -179,7 +180,8 @@ Creates a git worktree, assigns deterministic ports, resolves environment variab
 ```bash
 grove create feat/auth                      # Create from default base branch
 grove create feat/auth --from develop       # Create from specific base
-grove create feat/auth --no-tmux            # Skip tmux, just create worktree
+grove create feat/auth --no-open            # Provision only; do not open tmux
+grove create feat/auth --no-tmux            # Backwards-compatible alias for --no-open
 grove create feat/auth --all                # Include optional panes
 grove create feat/auth --with dev --with test  # Include specific optional panes
 ```
@@ -194,15 +196,34 @@ grove create feat/auth --with dev --with test  # Include specific optional panes
 | Flag | Description |
 |------|-------------|
 | `--from <ref>` | Base branch for new branches (default: auto-detected, usually `origin/main`) |
-| `--no-tmux` | Skip tmux workspace creation |
+| `--no-open` | Provision only: create/reuse the worktree, write env files, run hooks, and do not open tmux |
+| `--no-tmux` | Backwards-compatible alias for `--no-open` |
 | `--all` | Include all optional panes |
 | `--with <name>` | Include specific optional pane by name (repeatable) |
 | `--json` | Output as JSON |
 | `--attach` | Auto-attach to tmux (default: true) |
 
+### `grove open <branch>`
+
+Open or restore the full tmux workspace for an existing worktree. Grove labels its own tmux targets, so renamed Grove windows/sessions can still be found. If the labeled target was closed, Grove recreates the layout.
+
+```bash
+grove open feat/auth              # Open or restore the canonical workspace
+grove open feat/auth --new-window # Create an additional full tmux window
+```
+
+### `grove enter <branch>`
+
+Start an interactive subshell in the worktree in the current pane. This does not create or switch tmux windows. The shell receives Grove-managed env vars plus `GROVE_BRANCH`, `GROVE_WORKTREE`, and `GROVE_PROJECT_ROOT`.
+
+```bash
+grove enter feat/auth
+# type exit or press Ctrl-D to return
+```
+
 ### `grove attach <branch>`
 
-Jump back to an existing worktree. If a tmux session/window is running, switches to it. If not, creates one and attaches.
+Backwards-compatible alias for `grove open <branch>`.
 
 ```bash
 grove attach feat/auth
@@ -230,7 +251,16 @@ List all active worktrees with their branches, paths, and port assignments.
 
 ```bash
 grove list
+grove list --json   # agent/script-friendly output
 ```
+
+In an interactive terminal, `grove list` uses `fzf` when available:
+- `Enter` opens the canonical tmux workspace (`grove open <branch>`)
+- `Ctrl-P` enters the worktree in the current pane (`grove enter <branch>`)
+- `Ctrl-W` opens an additional tmux window (`grove open <branch> --new-window`)
+- `Ctrl-D` confirms and then deletes through normal delete safety checks
+
+If `fzf` is not available, Grove falls back to plain text output.
 
 ```
 Branch:   feat/auth
@@ -548,14 +578,29 @@ grove init --service api:4000:PORT --service web:3000:WEB_PORT \
   --env-file .env --pane nvim --pane "pnpm dev:dev:optional"
 ```
 
-**Structured output** — auto-JSON when piped, structured errors on stderr:
+**Provision without stealing focus:**
 ```bash
-grove list              # terminal: human-readable text
-output=$(grove list)    # piped: JSON automatically
-grove list --json       # force JSON in terminal
+json=$(grove create feat/agent-task --no-open --json)
+worktree=$(printf '%s' "$json" | jq -r .worktree)
+cd "$worktree"
 ```
 
-**Safe mutations** — `grove clean --dry-run` previews before acting, `--force` skips prompts.
+**Structured discovery** — auto-JSON when piped, explicit JSON in terminals:
+```bash
+grove list              # terminal: human-readable text or fzf picker
+grove list --json       # force JSON in terminal
+output=$(grove list)    # piped: JSON automatically
+```
+
+Agent rules:
+- Use `grove create <branch> --no-open --json` to provision without changing tmux focus.
+- Use `grove list --json` to discover existing worktrees, then use the returned `worktree` path as the working directory.
+- Use `grove open <branch>` only when the user asks to open or restore the full tmux UI.
+- Avoid `grove enter` unless explicitly asked because it starts an interactive shell.
+- Avoid interactive `grove list`/fzf; use `--json`.
+- Do not pass `--force` to `delete` or `clean` without explicit user approval.
+
+**Safe mutations** — `grove clean --dry-run` previews before acting, `--force` skips prompts only after explicit approval.
 
 ## Example Configs
 

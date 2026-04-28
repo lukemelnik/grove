@@ -591,3 +591,51 @@ func TestParseMergedBranches_SkipsCurrentBranch(t *testing.T) {
 		}
 	}
 }
+
+func TestCleanCmd_KillsLabeledRenamedWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/clean-labeled")
+	wtPath := filepath.Join(worktreeDir, "feat-clean-labeled")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/clean-labeled")
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+
+	runner := &recordingTmuxRunner{
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@8\tdev\trenamed\t" + repoDir + "\tfeat/clean-labeled\t" + wtPath + "\tcanonical",
+		},
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean", "--force"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("clean failed: %v\nOutput: %s", err, buf.String())
+	}
+	foundKill := false
+	for _, command := range runner.commands {
+		if len(command) == 3 && command[0] == "kill-window" && command[2] == "@8" {
+			foundKill = true
+		}
+	}
+	if !foundKill {
+		t.Fatalf("expected labeled window kill, got %v", runner.commands)
+	}
+}

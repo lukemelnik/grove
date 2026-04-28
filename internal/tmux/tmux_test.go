@@ -1115,17 +1115,23 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 
 	// Verify the command order:
 	// 1. new-session (no -e flags)
-	// 2. set-environment (session mode, for managed env vars)
-	// 3. send-keys for first pane
-	// 4. split-window + send-keys for each additional pane (no -e flags)
-	// 5. select-layout
-	// 6. select-pane
+	// 2. Grove labels
+	// 3. set-environment (session mode, for managed env vars)
+	// 4. send-keys for first pane
+	// 5. split-window + send-keys for each additional pane (no -e flags)
+	// 6. select-layout
+	// 7. select-pane
 	expected := []struct {
 		prefix []string
 	}{
 		// 1. Create session (no -e flags)
 		{[]string{"new-session", "-d", "-s", name, "-c", "/path/to/worktree"}},
-		// 2. Set environment (sorted alphabetically)
+		// 2. Label the Grove target
+		{[]string{"set", "-t", name, "@grove.project_root", ""}},
+		{[]string{"set", "-t", name, "@grove.branch", "feat/auth"}},
+		{[]string{"set", "-t", name, "@grove.worktree_path", "/path/to/worktree"}},
+		{[]string{"set", "-t", name, "@grove.role", "canonical"}},
+		// 3. Set environment (sorted alphabetically)
 		{[]string{"set-environment", "-t", name, "PORT", "4045"}},
 		{[]string{"set-environment", "-t", name, "VITE_API_URL", "http://localhost:4045"}},
 		{[]string{"set-environment", "-t", name, "WEB_PORT", "3045"}},
@@ -1606,5 +1612,108 @@ func TestSortedKeys(t *testing.T) {
 		if k != expected[i] {
 			t.Errorf("keys[%d] = %q, want %q", i, k, expected[i])
 		}
+	}
+}
+
+func TestCreate_LabelsSessionTarget(t *testing.T) {
+	runner := newMockRunner()
+	mgr := NewManager(runner)
+	name := SessionName("feat/labels")
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/labels",
+		WorktreePath: "/repo-wt/feat-labels",
+		Env:          map[string]string{},
+		TmuxConfig:   &config.TmuxConfig{Mode: "session"},
+		Attach:       false,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	for _, want := range [][]string{
+		{"set", "-t", name, "@grove.project_root", "/repo"},
+		{"set", "-t", name, "@grove.branch", "feat/labels"},
+		{"set", "-t", name, "@grove.worktree_path", "/repo-wt/feat-labels"},
+		{"set", "-t", name, "@grove.role", "canonical"},
+	} {
+		if runner.findCommand(want...) < 0 {
+			t.Fatalf("expected label command %v, got:\n%s", want, runner.commandString())
+		}
+	}
+}
+
+func TestFindCanonicalUsesLabelsAndProjectRoot(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = ""
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = strings.Join([]string{
+		"@1\tdev\trenamed\t/repo-a\tfeat/shared\t/repo-a-wt\tcanonical",
+		"@2\tdev\trenamed-again\t/repo-b\tfeat/shared\t/repo-b-wt\tcanonical",
+	}, "\n")
+	mgr := NewManager(runner)
+
+	target, ok := mgr.FindCanonical("/repo-b", "feat/shared", "/repo-b-wt", "window")
+	if !ok {
+		t.Fatal("expected canonical target")
+	}
+	if target.Target != "@2" || target.Name != "renamed-again" || target.Session != "dev" {
+		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestDestroyLabeledKillsMatchingTargets(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = "grove-session\t/repo\tfeat/destroy\t/wt\tcanonical"
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = strings.Join([]string{
+		"@1\tgrove-session\textra\t/repo\tfeat/destroy\t/wt\textra",
+		"@2\tdev\textra\t/repo\tfeat/destroy\t/wt\textra",
+		"@3\tdev\tother\t/repo\tfeat/other\t/other\tcanonical",
+	}, "\n")
+	mgr := NewManager(runner)
+
+	killed, err := mgr.DestroyLabeled("/repo", "feat/destroy", "/wt")
+	if err != nil {
+		t.Fatalf("DestroyLabeled failed: %v", err)
+	}
+	if !killed {
+		t.Fatal("expected labeled targets to be killed")
+	}
+	if runner.findCommand("kill-session", "-t", "grove-session") < 0 {
+		t.Fatalf("expected labeled session kill, got:\n%s", runner.commandString())
+	}
+	if runner.findCommand("kill-window", "-t", "@2") < 0 {
+		t.Fatalf("expected labeled extra window kill, got:\n%s", runner.commandString())
+	}
+	if runner.findCommand("kill-window", "-t", "@3") >= 0 {
+		t.Fatalf("should not kill labels for other branches, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_ForceNewWindowLabelsExtra(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := newMockRunner()
+	name := SessionName("feat/extra")
+	runner.outputs["new-window -P -F #{window_id} -t my-session -n "+name+" -c /wt"] = "@42"
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:    "/repo",
+		Branch:         "feat/extra",
+		WorktreePath:   "/wt",
+		Env:            map[string]string{},
+		TmuxConfig:     &config.TmuxConfig{Mode: "window"},
+		Attach:         false,
+		Role:           RoleExtra,
+		ForceNewWindow: true,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if runner.findCommand("new-window", "-P", "-F", "#{window_id}", "-t", "my-session") < 0 {
+		t.Fatalf("expected forced new-window, got:\n%s", runner.commandString())
+	}
+	if runner.findCommand("setw", "-t", "@42", "@grove.role", "extra") < 0 {
+		t.Fatalf("expected extra role label on new window, got:\n%s", runner.commandString())
 	}
 }

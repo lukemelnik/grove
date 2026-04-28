@@ -650,3 +650,53 @@ func TestCheckOpenPRs_GhError(t *testing.T) {
 		t.Error("expected error when gh fails")
 	}
 }
+
+func TestDeleteCmd_KillsLabeledRenamedWindow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/delete-labeled")
+	wtPath := filepath.Join(worktreeDir, "feat-delete-labeled")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/delete-labeled")
+
+	mockWorkingDir(t, repoDir)
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+
+	runner := &recordingTmuxRunner{
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@7\tdev\trenamed\t" + repoDir + "\tfeat/delete-labeled\t" + wtPath + "\tcanonical",
+		},
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/delete-labeled", "--force"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("delete failed: %v\nOutput: %s", err, buf.String())
+	}
+	foundKill := false
+	for _, command := range runner.commands {
+		if len(command) == 3 && command[0] == "kill-window" && command[2] == "@7" {
+			foundKill = true
+		}
+	}
+	if !foundKill {
+		t.Fatalf("expected labeled window kill, got %v", runner.commands)
+	}
+}

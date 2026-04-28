@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -118,8 +119,32 @@ func sessionNameCandidates(branch string) []string {
 	return []string{canonical, legacy}
 }
 
+const (
+	// RoleCanonical marks Grove's primary reopen target for a worktree.
+	RoleCanonical = "canonical"
+	// RoleExtra marks additional Grove-created targets for the same worktree.
+	RoleExtra = "extra"
+
+	optionBranch      = "@grove.branch"
+	optionProjectRoot = "@grove.project_root"
+	optionWorktree    = "@grove.worktree_path"
+	optionRole        = "@grove.role"
+)
+
+// Target identifies a labeled Grove tmux target.
+type Target struct {
+	Mode    string
+	Target  string
+	Session string
+	Name    string
+	Role    string
+}
+
 // Options controls tmux workspace creation behavior.
 type Options struct {
+	// ProjectRoot is the main repository root used to label and find Grove targets.
+	ProjectRoot string
+
 	// IncludeAll includes all optional panes.
 	IncludeAll bool
 
@@ -142,6 +167,12 @@ type Options struct {
 
 	// TmuxConfig is the tmux configuration from .grove.yml.
 	TmuxConfig *config.TmuxConfig
+
+	// Role labels the created target as canonical or extra. Defaults to canonical.
+	Role string
+
+	// ForceNewWindow creates a new tmux window even if another target exists.
+	ForceNewWindow bool
 }
 
 // Manager orchestrates tmux workspace creation.
@@ -163,21 +194,37 @@ func (m *Manager) Create(opts Options) error {
 	if mode == "" {
 		mode = "window"
 	}
+	if opts.ForceNewWindow {
+		mode = "window"
+	}
+
+	role := opts.Role
+	if role == "" {
+		role = RoleCanonical
+	}
 
 	// Step 1: Create session or window
+	var target Target
 	switch mode {
 	case "session":
 		if err := m.createSession(name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux session: %w", err)
 		}
+		target = Target{Mode: "session", Target: name, Session: name, Name: name, Role: role}
 	case "window":
 		session, err := m.currentSession()
 		if err != nil {
 			return fmt.Errorf("window mode requires running inside tmux; start tmux and rerun, or set tmux.mode=session: %w", err)
 		}
-		if err := m.createWindow(session, name, opts.WorktreePath); err != nil {
+		windowTarget, err := m.createWindow(session, name, opts.WorktreePath, opts.ForceNewWindow)
+		if err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
 		}
+		target = Target{Mode: "window", Target: windowTarget, Session: session, Name: name, Role: role}
+	}
+
+	if err := m.labelTarget(target, opts.ProjectRoot, opts.Branch, opts.WorktreePath, role); err != nil {
+		return fmt.Errorf("labeling tmux target: %w", err)
 	}
 
 	// Step 2: Inject managed env via set-environment (session mode only).
@@ -185,7 +232,7 @@ func (m *Manager) Create(opts Options) error {
 	// In window mode, set-environment would leak between windows, so we skip it —
 	// tools should read .env/.env.local files instead.
 	if mode == "session" && len(opts.Env) > 0 {
-		if err := m.injectEnv(name, opts.Env); err != nil {
+		if err := m.injectEnv(target.Target, opts.Env); err != nil {
 			return fmt.Errorf("injecting environment: %w", err)
 		}
 	}
@@ -194,14 +241,13 @@ func (m *Manager) Create(opts Options) error {
 	panes := filterPanes(cfg.Panes, opts.IncludeAll, opts.IncludeWith)
 
 	// Step 4: Create panes
-	target := name // session or window name
-	if err := m.createPanes(target, opts.WorktreePath, panes, cfg); err != nil {
+	if err := m.createPanes(target.Target, opts.WorktreePath, panes, cfg); err != nil {
 		return fmt.Errorf("creating panes: %w", err)
 	}
 
 	// Step 5: Attach/switch if requested
 	if opts.Attach {
-		if err := m.doAttach(name, mode); err != nil {
+		if err := m.AttachTarget(target); err != nil {
 			return fmt.Errorf("attaching to tmux: %w", err)
 		}
 	}
@@ -267,6 +313,180 @@ func (m *Manager) ResolveName(branch, mode string) string {
 	return SessionName(branch)
 }
 
+func (m *Manager) labelTarget(target Target, projectRoot, branch, worktreePath, role string) error {
+	labels := []struct {
+		key string
+		val string
+	}{
+		{optionProjectRoot, projectRoot},
+		{optionBranch, branch},
+		{optionWorktree, worktreePath},
+		{optionRole, role},
+	}
+
+	for _, label := range labels {
+		var err error
+		if target.Mode == "session" {
+			_, err = m.runner.Run("set", "-t", target.Target, label.key, label.val)
+		} else {
+			_, err = m.runner.Run("setw", "-t", target.Target, label.key, label.val)
+		}
+		if err != nil {
+			return fmt.Errorf("setting %s: %w", label.key, err)
+		}
+	}
+	return nil
+}
+
+// FindCanonical finds Grove's labeled canonical target for a worktree.
+func (m *Manager) FindCanonical(projectRoot, branch, worktreePath, mode string) (Target, bool) {
+	for _, target := range m.FindTargets(projectRoot, branch, worktreePath) {
+		if mode != "" && target.Mode != mode {
+			continue
+		}
+		if target.Role == RoleCanonical {
+			return target, true
+		}
+	}
+	return Target{}, false
+}
+
+// FindTargets returns all Grove-labeled tmux targets for a worktree.
+func (m *Manager) FindTargets(projectRoot, branch, worktreePath string) []Target {
+	var targets []Target
+	targets = append(targets, m.findSessionTargets(projectRoot, branch, worktreePath)...)
+	targets = append(targets, m.findWindowTargets(projectRoot, branch, worktreePath)...)
+	return targets
+}
+
+func (m *Manager) findSessionTargets(projectRoot, branch, worktreePath string) []Target {
+	format := "#{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
+	out, err := m.runner.Run("list-sessions", "-F", format)
+	if err != nil {
+		return nil
+	}
+
+	var targets []Target
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 5 {
+			continue
+		}
+		if !labelMatch(fields[1], fields[2], fields[3], projectRoot, branch, worktreePath) {
+			continue
+		}
+		targets = append(targets, Target{
+			Mode:    "session",
+			Target:  fields[0],
+			Session: fields[0],
+			Name:    fields[0],
+			Role:    fields[4],
+		})
+	}
+	return targets
+}
+
+func (m *Manager) findWindowTargets(projectRoot, branch, worktreePath string) []Target {
+	format := "#{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
+	out, err := m.runner.Run("list-windows", "-a", "-F", format)
+	if err != nil {
+		return nil
+	}
+
+	var targets []Target
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		fields := strings.Split(line, "\t")
+		if len(fields) < 7 {
+			continue
+		}
+		if !labelMatch(fields[3], fields[4], fields[5], projectRoot, branch, worktreePath) {
+			continue
+		}
+		targets = append(targets, Target{
+			Mode:    "window",
+			Target:  fields[0],
+			Session: fields[1],
+			Name:    fields[2],
+			Role:    fields[6],
+		})
+	}
+	return targets
+}
+
+func labelMatch(gotProjectRoot, gotBranch, gotWorktree, projectRoot, branch, worktreePath string) bool {
+	if gotBranch != branch {
+		return false
+	}
+	if projectRoot != "" && !samePathLabel(gotProjectRoot, projectRoot) {
+		return false
+	}
+	if worktreePath != "" && !samePathLabel(gotWorktree, worktreePath) {
+		return false
+	}
+	return true
+}
+
+func samePathLabel(a, b string) bool {
+	if a == b {
+		return true
+	}
+	return normalizePathLabel(a) == normalizePathLabel(b)
+}
+
+func normalizePathLabel(path string) string {
+	if path == "" {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err == nil {
+		path = abs
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		path = resolved
+	}
+	return filepath.Clean(path)
+}
+
+// DestroyLabeled kills all Grove-labeled tmux targets for a worktree.
+func (m *Manager) DestroyLabeled(projectRoot, branch, worktreePath string) (bool, error) {
+	targets := m.FindTargets(projectRoot, branch, worktreePath)
+	if len(targets) == 0 {
+		return false, nil
+	}
+
+	killedSessions := map[string]bool{}
+	var firstErr error
+	for _, target := range targets {
+		if target.Mode != "session" {
+			continue
+		}
+		if killedSessions[target.Session] {
+			continue
+		}
+		if _, err := m.runner.Run("kill-session", "-t", target.Target); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("killing tmux session %q: %w", target.Target, err)
+		}
+		killedSessions[target.Session] = true
+	}
+	for _, target := range targets {
+		if target.Mode != "window" || killedSessions[target.Session] {
+			continue
+		}
+		if _, err := m.runner.Run("kill-window", "-t", target.Target); err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("killing tmux window %q: %w", target.Target, err)
+		}
+	}
+
+	return true, firstErr
+}
+
 // createSession creates a new detached tmux session.
 func (m *Manager) createSession(name, workdir string) error {
 	_, err := m.runner.Run("new-session", "-d", "-s", name, "-c", workdir)
@@ -274,13 +494,20 @@ func (m *Manager) createSession(name, workdir string) error {
 }
 
 // createWindow creates a new window in the given session.
-// If a window with the same name already exists, it is reused instead.
-func (m *Manager) createWindow(session, name, workdir string) error {
-	if m.HasWindow(name) {
-		return nil
+// If a window with the same name already exists, it is reused unless force is true.
+func (m *Manager) createWindow(session, name, workdir string, force bool) (string, error) {
+	if !force && m.HasWindow(name) {
+		return name, nil
 	}
-	_, err := m.runner.Run("new-window", "-t", session, "-n", name, "-c", workdir)
-	return err
+	out, err := m.runner.Run("new-window", "-P", "-F", "#{window_id}", "-t", session, "-n", name, "-c", workdir)
+	if err != nil {
+		return "", err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return name, nil
+	}
+	return out, nil
 }
 
 // currentSession returns the name of the current tmux session, or error if not inside tmux.
@@ -501,6 +728,26 @@ func (m *Manager) createPanesRaw(target, workdir string, panes []config.Pane, ra
 // This is the public version of the attach method.
 func (m *Manager) Attach(name, mode string) error {
 	return m.doAttach(name, mode)
+}
+
+// AttachTarget attaches to or switches to a specific labeled tmux target.
+func (m *Manager) AttachTarget(target Target) error {
+	if target.Mode == "session" {
+		return m.doAttach(target.Target, "session")
+	}
+
+	if os.Getenv("TMUX") != "" {
+		_, err := m.runner.Run("select-window", "-t", target.Target)
+		return err
+	}
+
+	if target.Session == "" {
+		_, err := m.runner.Run("attach", "-t", target.Target)
+		return err
+	}
+	_, _ = m.runner.Run("select-window", "-t", target.Target)
+	_, err := m.runner.Run("attach", "-t", target.Session)
+	return err
 }
 
 // doAttach implements the attach/switch logic.
