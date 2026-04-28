@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 func TestListCmd_Empty(t *testing.T) {
@@ -238,5 +240,114 @@ func TestListCmd_NoServices(t *testing.T) {
 				t.Errorf("expected empty ports for no-services config, got %v", e.Ports)
 			}
 		}
+	}
+}
+
+func TestParseListPickerOutputActions(t *testing.T) {
+	tests := []struct {
+		output string
+		action listPickerAction
+		branch string
+	}{
+		{"enter\nfeat/open\t/path\n", listActionOpen, "feat/open"},
+		{"ctrl-p\nfeat/enter\t/path\n", listActionEnter, "feat/enter"},
+		{"ctrl-w\nfeat/window\t/path\n", listActionOpenNewWindow, "feat/window"},
+		{"ctrl-d\nfeat/delete\t/path\n", listActionDelete, "feat/delete"},
+		{"feat/default\t/path\n", listActionOpen, "feat/default"},
+	}
+
+	for _, tt := range tests {
+		selection, err := parseListPickerOutput(tt.output)
+		if err != nil {
+			t.Fatalf("parseListPickerOutput(%q) returned error: %v", tt.output, err)
+		}
+		if selection == nil {
+			t.Fatalf("expected selection for %q", tt.output)
+		}
+		if selection.Action != tt.action || selection.Branch != tt.branch {
+			t.Fatalf("got action=%s branch=%s, want action=%s branch=%s", selection.Action, selection.Branch, tt.action, tt.branch)
+		}
+	}
+}
+
+func TestListCmd_InteractivePickerDispatchesAction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := "worktree_dir: " + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/picker")
+	gitRun(t, repoDir, "worktree", "add", filepath.Join(worktreeDir, "feat-picker"), "feat/picker")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	origPicker := listPicker
+	listPicker = func(entries []listEntry) (*listPickerSelection, error) {
+		if len(entries) == 0 {
+			t.Fatal("expected entries passed to picker")
+		}
+		return &listPickerSelection{Action: listActionOpenNewWindow, Branch: "feat/picker"}, nil
+	}
+	t.Cleanup(func() { listPicker = origPicker })
+
+	var gotAction listPickerAction
+	var gotBranch string
+	origDispatcher := listActionDispatcher
+	listActionDispatcher = func(cmd *cobra.Command, action listPickerAction, branch string) error {
+		gotAction = action
+		gotBranch = branch
+		return nil
+	}
+	t.Cleanup(func() { listActionDispatcher = origDispatcher })
+
+	rootCmd := NewRootCmd()
+	var errBuf bytes.Buffer
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetArgs([]string{"list"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("list failed: %v\nErr: %s", err, errBuf.String())
+	}
+	if gotAction != listActionOpenNewWindow || gotBranch != "feat/picker" {
+		t.Fatalf("expected open-new-window dispatch for feat/picker, got action=%s branch=%s", gotAction, gotBranch)
+	}
+}
+
+func TestListCmd_JSONDoesNotUseInteractivePicker(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := "worktree_dir: " + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/json-no-picker")
+	gitRun(t, repoDir, "worktree", "add", filepath.Join(worktreeDir, "feat-json-no-picker"), "feat/json-no-picker")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	origPicker := listPicker
+	listPicker = func(entries []listEntry) (*listPickerSelection, error) {
+		t.Fatal("picker should not run for list --json")
+		return nil, nil
+	}
+	t.Cleanup(func() { listPicker = origPicker })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"list", "--json"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("list --json failed: %v\nOutput: %s", err, buf.String())
+	}
+	var entries []listEntry
+	if err := json.Unmarshal(buf.Bytes(), &entries); err != nil {
+		t.Fatalf("expected JSON output, got %v: %s", err, buf.String())
 	}
 }

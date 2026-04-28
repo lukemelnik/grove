@@ -138,10 +138,12 @@ func runClean(cmd *cobra.Command, args []string) error {
 	// Step 6: Clean each stale worktree
 	var cleaned []staleWorktree
 	for _, s := range stale {
-		// Kill tmux session/window if configured
-		if cfg.Tmux != nil {
-			destroyTmuxForBranch(cmd, s.Branch, cfg.Tmux)
+		// Kill Grove-labeled tmux targets, with legacy name fallback.
+		tmuxCfg := cfg.Tmux
+		if tmuxCfg == nil {
+			tmuxCfg = &config.TmuxConfig{}
 		}
+		destroyTmuxForBranch(cmd, s.Branch, projectRoot, s.Worktree, tmuxCfg)
 
 		// Stale branches can still have local edits, so only force removal when
 		// the user explicitly asked for it.
@@ -281,10 +283,18 @@ func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]stal
 	return stale, nil
 }
 
-// destroyTmuxForBranch kills the tmux session/window for a branch, ignoring errors.
-func destroyTmuxForBranch(cmd *cobra.Command, branch string, tmuxCfg *config.TmuxConfig) {
+// destroyTmuxForBranch kills tmux targets for a branch, ignoring errors.
+func destroyTmuxForBranch(cmd *cobra.Command, branch, projectRoot, worktreePath string, tmuxCfg *config.TmuxConfig) {
 	tmuxRunner := tmuxRunnerFactory()
 	tmuxMgr := tmux.NewManager(tmuxRunner)
+
+	killedLabeled, killErr := tmuxMgr.DestroyLabeled(projectRoot, branch, worktreePath)
+	if killErr != nil {
+		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill labeled tmux target for %s: %v\n", branch, killErr)
+	}
+	if killedLabeled {
+		return
+	}
 
 	mode := tmuxCfg.Mode
 	if mode == "" {

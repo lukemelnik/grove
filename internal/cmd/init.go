@@ -39,6 +39,10 @@ Pane format:     command[:name[:optional]]
 If --worktree-dir is omitted, Grove defaults to ../.grove-worktrees/<repo-name>.
 Set it only when you want a different location.
 
+Use --env-file for shared/root-level env symlinks (top-level env_files in .grove.yml),
+for example .env or .env.apple. Service-scoped env files like apps/api/.env
+belong under services.<name>.env_file in YAML.
+
 The --pane flag only creates a flat pane list. For nested tmux split layouts,
 edit the generated .grove.yml (or start from 'grove schema').
 
@@ -67,7 +71,7 @@ Run 'grove schema' to see the full .grove.yml configuration reference.`,
 	}
 
 	cmd.Flags().StringArray("service", nil, `add a service (format: name:port:ENV_VAR, repeatable)`)
-	cmd.Flags().StringArray("env-file", nil, "add an env file path (repeatable)")
+	cmd.Flags().StringArray("env-file", nil, "add a shared/root env file path for top-level env_files (repeatable)")
 	cmd.Flags().StringArray("pane", nil, `add a tmux pane (format: command[:name[:optional]], repeatable)`)
 	cmd.Flags().String("worktree-dir", "", "worktree directory override (default when omitted: ../.grove-worktrees/<repo-name>)")
 	cmd.Flags().String("tmux-mode", "", `tmux mode: "window" or "session"`)

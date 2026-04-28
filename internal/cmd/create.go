@@ -6,10 +6,7 @@ import (
 	"os"
 	"sort"
 
-	"github.com/lukemelnik/grove/internal/config"
-	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/hooks"
-	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/tmux"
 	"github.com/lukemelnik/grove/internal/worktree"
 
@@ -30,6 +27,11 @@ func newCreateCmd() *cobra.Command {
 		Long: `Create a git worktree with deterministic port assignment and optional
 tmux workspace. If a tmux config is present in .grove.yml, sets up
 a tmux session/window with panes and environment variables.
+
+Use --no-open when you want to provision the worktree, ports, env files,
+and hooks without opening tmux. Use 'grove open <branch>' later to open or
+restore the full tmux workspace, or 'grove enter <branch>' to enter the
+worktree in the current pane.
 
 Branch resolution:
   1. Branch exists locally — use it
@@ -74,7 +76,8 @@ Run 'grove schema' for the full .grove.yml configuration reference.`,
 	}
 
 	cmd.Flags().String("from", "", "base branch for new branches (default: origin/main)")
-	cmd.Flags().Bool("no-tmux", false, "skip tmux, just create worktree and print info")
+	cmd.Flags().Bool("no-open", false, "provision only; create/reuse worktree, env, and hooks without opening tmux")
+	cmd.Flags().Bool("no-tmux", false, "deprecated alias for --no-open")
 	cmd.Flags().Bool("all", false, "include optional panes")
 	cmd.Flags().StringArray("with", nil, "include specific optional pane(s)")
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
@@ -91,9 +94,10 @@ var tmuxRunnerFactory = func() tmux.Runner {
 func runCreate(cmd *cobra.Command, args []string) error {
 	branch := args[0]
 
-	// Parse flags
 	fromRef, _ := cmd.Flags().GetString("from")
+	noOpen, _ := cmd.Flags().GetBool("no-open")
 	noTmux, _ := cmd.Flags().GetBool("no-tmux")
+	provisionOnly := noOpen || noTmux
 	explicitJSON, _ := cmd.Flags().GetBool("json")
 	jsonOutput := shouldOutputJSON(cmd)
 	includeAll, _ := cmd.Flags().GetBool("all")
@@ -105,52 +109,45 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		attach = false
 	}
 
-	// Step 1: Discover and load config
-	cwd, err := getWorkingDir()
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
-	}
-
-	configPath, projectRoot, err := config.Discover(cwd)
+	ctx, err := loadProjectContext()
 	if err != nil {
 		return outputError(cmd, err)
 	}
 
-	cfg, err := config.Load(configPath)
+	portAssignment, managed, err := resolveRuntimeEnv(ctx, branch)
 	if err != nil {
 		return outputError(cmd, err)
 	}
 
-	// Step 2: Detect default branch and assign ports
-	git := worktree.NewGitRunner(projectRoot)
-	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
-	defaultBranch := wtMgr.DefaultBranch()
-
-	var portAssignment *ports.Assignment
-	if len(cfg.Services) > 0 {
-		portAssignment, err = ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, defaultBranch)
-		if err != nil {
-			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
-		}
-	} else {
-		portAssignment = &ports.Assignment{Ports: map[string]int{}}
-	}
-
-	// Step 3: Resolve managed env before making any filesystem changes so a bad
-	// template fails fast instead of creating a partial worktree.
-	managed, err := env.BuildManagedEnv(cfg, portAssignment.Ports, branch)
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("resolving managed environment: %w", err))
-	}
-
-	// Step 4: Create worktree with branch resolution
-	result, err := wtMgr.Create(branch, fromRef)
+	result, err := ctx.Worktrees.Create(branch, fromRef)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
 	}
 
-	// Step 5: Output worktree details before attach so interactive users still
-	// see the workspace info before tmux takes over.
+	if err := syncWorktreeEnv(cmd, ctx.Config, ctx.ProjectRoot, result.Path, managed); err != nil {
+		return outputError(cmd, err)
+	}
+
+	if ctx.Config.Hooks != nil && len(ctx.Config.Hooks.PostCreate) > 0 {
+		hookStdout := os.Stdout
+		if jsonOutput {
+			hookStdout = os.Stderr // keep JSON output clean
+		}
+		hookOpts := hooks.RunOpts{
+			Branch:       branch,
+			WorktreePath: result.Path,
+			ProjectRoot:  ctx.ProjectRoot,
+			Ports:        portAssignment.Ports,
+			Stdout:       hookStdout,
+			Stderr:       os.Stderr,
+		}
+		if warnings := hooks.RunPostCreate(ctx.Config.Hooks.PostCreate, hookOpts); len(warnings) > 0 {
+			for _, w := range warnings {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", w)
+			}
+		}
+	}
+
 	if jsonOutput {
 		if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
 			return outputError(cmd, err)
@@ -159,68 +156,27 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, err)
 	}
 
-	// Step 6: Symlink .env files and write .env.local with managed vars
-	allEnvFiles := cfg.AllEnvFiles()
-	if len(allEnvFiles) > 0 {
-		if err := env.SymlinkEnvFiles(allEnvFiles, projectRoot, result.Path); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
-		}
-		mappings, err := managed.EnvLocalMappings(cfg, projectRoot)
-		if err != nil {
-			return outputError(cmd, fmt.Errorf("building .env.local mappings: %w", err))
-		}
-		if len(mappings) > 0 {
-			if err := env.WriteEnvLocals(mappings, result.Path); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
-			}
-		}
-	}
-
-	// Step 7: Run post_create hooks
-	if cfg.Hooks != nil && len(cfg.Hooks.PostCreate) > 0 {
-		hookStdout := os.Stdout
-		if jsonOutput {
-			hookStdout = os.Stderr // keep JSON output clean
-		}
-		hookOpts := hooks.RunOpts{
-			Branch:       branch,
-			WorktreePath: result.Path,
-			ProjectRoot:  projectRoot,
-			Ports:        portAssignment.Ports,
-			Stdout:       hookStdout,
-			Stderr:       os.Stderr,
-		}
-		if warnings := hooks.RunPostCreate(cfg.Hooks.PostCreate, hookOpts); len(warnings) > 0 {
-			for _, w := range warnings {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", w)
-			}
-		}
-	}
-
-	// Step 8: Tmux workspace setup (default to empty config if not specified)
-	if !noTmux {
-		tmuxCfg := cfg.Tmux
-		if tmuxCfg == nil {
-			tmuxCfg = &config.TmuxConfig{}
-		}
-
-		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
-		tmuxOpts := tmux.Options{
-			Branch:       branch,
-			WorktreePath: result.Path,
-			Env:          managed.SessionEnv(),
-			TmuxConfig:   tmuxCfg,
-			IncludeAll:   includeAll,
-			IncludeWith:  includeWith,
-			Attach:       attach,
-		}
-		if err := tmuxMgr.Create(tmuxOpts); err != nil {
-			return outputError(cmd, fmt.Errorf("setting up tmux workspace: %w", err))
-		}
-	} else {
+	if provisionOnly {
 		if !jsonOutput {
-			fmt.Fprintf(cmd.OutOrStdout(), "\n  cd %s\n", result.Path)
+			fmt.Fprintf(cmd.OutOrStdout(), "\nNext steps:\n  grove open %s   # open or restore the full tmux workspace\n  grove enter %s  # enter this worktree in the current pane\n", result.Branch, result.Branch)
 		}
+		return nil
+	}
+
+	tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
+	tmuxOpts := tmux.Options{
+		ProjectRoot:  ctx.ProjectRoot,
+		Branch:       branch,
+		WorktreePath: result.Path,
+		Env:          managed.SessionEnv(),
+		TmuxConfig:   effectiveTmuxConfig(ctx.Config),
+		IncludeAll:   includeAll,
+		IncludeWith:  includeWith,
+		Attach:       attach,
+		Role:         tmux.RoleCanonical,
+	}
+	if err := tmuxMgr.Create(tmuxOpts); err != nil {
+		return outputError(cmd, fmt.Errorf("setting up tmux workspace: %w", err))
 	}
 
 	return nil

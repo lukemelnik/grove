@@ -125,29 +125,49 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 4: Remove tmux session/window (if tmux config exists)
-	if cfg.Tmux != nil {
+	// Step 4: Remove tmux targets. Prefer Grove labels so renamed windows are
+	// cleaned up, then fall back to legacy name lookup for older workspaces.
+	tmuxCfg := cfg.Tmux
+	if tmuxCfg == nil {
+		tmuxCfg = &config.TmuxConfig{}
+	}
+	{
 		tmuxRunner := tmuxRunnerFactory()
 		tmuxMgr := tmux.NewManager(tmuxRunner)
-
-		mode := cfg.Tmux.Mode
-		if mode == "" {
-			mode = "window"
-		}
-		name := tmuxMgr.ResolveName(branch, mode)
-
-		// Try to kill — ignore errors (session/window may not be running)
-		switch mode {
-		case "session":
-			if tmuxMgr.HasSession(name) {
-				if err := tmuxMgr.Destroy(branch, cfg.Tmux); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux session: %v\n", err)
+		wtPath := worktree.WorktreePath(projectRoot, cfg.WorktreeDir, branch)
+		if worktrees, listErr := wtMgr.List(); listErr == nil {
+			for _, wt := range worktrees {
+				if wt.Branch == branch {
+					wtPath = wt.Path
+					break
 				}
 			}
-		case "window":
-			if tmuxMgr.HasWindow(name) {
-				if err := tmuxMgr.Destroy(branch, cfg.Tmux); err != nil {
-					fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux window: %v\n", err)
+		}
+
+		killedLabeled, killErr := tmuxMgr.DestroyLabeled(projectRoot, branch, wtPath)
+		if killErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill labeled tmux target: %v\n", killErr)
+		}
+		if !killedLabeled {
+			mode := tmuxCfg.Mode
+			if mode == "" {
+				mode = "window"
+			}
+			name := tmuxMgr.ResolveName(branch, mode)
+
+			// Try to kill — ignore errors (session/window may not be running)
+			switch mode {
+			case "session":
+				if tmuxMgr.HasSession(name) {
+					if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux session: %v\n", err)
+					}
+				}
+			case "window":
+				if tmuxMgr.HasWindow(name) {
+					if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
+						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux window: %v\n", err)
+					}
 				}
 			}
 		}

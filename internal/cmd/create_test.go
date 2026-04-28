@@ -624,3 +624,113 @@ func tmuxCommandSeen(runner *recordingTmuxRunner, name string) bool {
 	}
 	return false
 }
+
+func TestCreateCmd_NoOpenProvisionOnlyRunsEnvHooksAndSkipsTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    env_file: apps/api/config
+    port:
+      base: 4000
+      env: PORT
+hooks:
+  post_create:
+    - scripts/post-create.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.MkdirAll(filepath.Join(repoDir, "apps", "api"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "apps", "api", "config"), []byte("BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hookScript := "#!/bin/sh\necho \"$GROVE_BRANCH\" > \"$GROVE_WORKTREE/hook-ran.txt\"\n"
+	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "post-create.sh"), []byte(hookScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	gitRun(t, repoDir, "add", ".")
+	gitRun(t, repoDir, "commit", "-m", "add config and hook")
+	gitRun(t, repoDir, "branch", "feat/no-open")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/no-open", "--no-open"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create --no-open failed: %v\nOutput: %s", err, buf.String())
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("--no-open should not call tmux, got %v", runner.commands)
+	}
+	if !strings.Contains(buf.String(), "grove open feat/no-open") || !strings.Contains(buf.String(), "grove enter feat/no-open") {
+		t.Fatalf("expected next-step guidance, got:\n%s", buf.String())
+	}
+
+	wtPath := filepath.Join(worktreeDir, worktree.SanitizeBranchName("feat/no-open"))
+	if data, err := os.ReadFile(filepath.Join(wtPath, "hook-ran.txt")); err != nil || strings.TrimSpace(string(data)) != "feat/no-open" {
+		t.Fatalf("expected hook marker for branch, data=%q err=%v", string(data), err)
+	}
+	localPath := filepath.Join(wtPath, "apps", "api", "config.local")
+	data, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatalf("expected generated local config at %s: %v", localPath, err)
+	}
+	if !strings.Contains(string(data), "PORT=") {
+		t.Fatalf("expected generated port in local config, got:\n%s", string(data))
+	}
+}
+
+func TestCreateCmd_NoTmuxAliasSkipsTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/no-tmux-alias")
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/no-tmux-alias", "--no-tmux"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create --no-tmux failed: %v\nOutput: %s", err, buf.String())
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("--no-tmux should remain a no-tmux alias, got %v", runner.commands)
+	}
+}

@@ -274,10 +274,24 @@ type recordingTmuxRunner struct {
 	hasSessionResult bool
 	hasWindowResult  bool
 	currentSession   string
+	outputs          map[string]string
+	errors           map[string]error
 }
 
 func (r *recordingTmuxRunner) Run(args ...string) (string, error) {
 	r.commands = append(r.commands, args)
+
+	key := strings.Join(args, " ")
+	if r.errors != nil {
+		if err, ok := r.errors[key]; ok {
+			return "", err
+		}
+	}
+	if r.outputs != nil {
+		if out, ok := r.outputs[key]; ok {
+			return out, nil
+		}
+	}
 
 	if len(args) > 0 {
 		switch args[0] {
