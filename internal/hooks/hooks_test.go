@@ -96,6 +96,80 @@ func TestRunPostCreate_ScriptFails(t *testing.T) {
 	}
 }
 
+func TestRunPreDelete_EnvVarsAndCwd(t *testing.T) {
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	outFile := filepath.Join(projectRoot, "pre-delete-output.txt")
+
+	writeScript(t, filepath.Join(projectRoot, "scripts", "pre-delete.sh"),
+		"#!/bin/bash\nenv | grep GROVE_ | sort > "+outFile+"\npwd >> "+outFile+"\n")
+
+	opts := RunOpts{
+		Branch:       "feat/delete",
+		WorktreePath: worktreePath,
+		ProjectRoot:  projectRoot,
+		Ports:        map[string]int{"api": 4042},
+	}
+
+	if err := RunPreDelete([]string{"scripts/pre-delete.sh"}, opts); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("script output not found: %v", err)
+	}
+	output := string(data)
+	for _, want := range []string{
+		"GROVE_BRANCH=feat/delete",
+		"GROVE_PORT_API=4042",
+		"GROVE_PROJECT_ROOT=" + projectRoot,
+		"GROVE_WORKTREE=" + worktreePath,
+	} {
+		if !strings.Contains(output, want) {
+			t.Errorf("missing %q in output:\n%s", want, output)
+		}
+	}
+	if !strings.Contains(output, worktreePath) {
+		t.Errorf("expected cwd %s in output:\n%s", worktreePath, output)
+	}
+}
+
+func TestRunPreDelete_ScriptNotFoundErrors(t *testing.T) {
+	opts := RunOpts{
+		ProjectRoot:  t.TempDir(),
+		WorktreePath: t.TempDir(),
+		Ports:        map[string]int{},
+	}
+
+	err := RunPreDelete([]string{"scripts/nonexistent.sh"}, opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("expected 'not found' error, got: %v", err)
+	}
+}
+
+func TestRunPreDelete_ScriptFails(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeScript(t, filepath.Join(projectRoot, "fail.sh"), "#!/bin/bash\nexit 1\n")
+
+	opts := RunOpts{
+		ProjectRoot:  projectRoot,
+		WorktreePath: t.TempDir(),
+		Ports:        map[string]int{},
+	}
+
+	err := RunPreDelete([]string{"fail.sh"}, opts)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "hooks.pre_delete") || !strings.Contains(err.Error(), "failed") {
+		t.Errorf("expected pre_delete failure, got: %v", err)
+	}
+}
+
 func TestRunPostCreate_EmptyList(t *testing.T) {
 	warnings := RunPostCreate(nil, RunOpts{})
 	if len(warnings) != 0 {

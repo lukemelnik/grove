@@ -3,6 +3,7 @@ package hooks
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,8 +17,8 @@ type RunOpts struct {
 	WorktreePath string
 	ProjectRoot  string
 	Ports        map[string]int // service name -> assigned port
-	Stdout       *os.File       // typically os.Stdout
-	Stderr       *os.File       // typically os.Stderr
+	Stdout       io.Writer      // typically os.Stdout
+	Stderr       io.Writer      // typically os.Stderr
 }
 
 // RunPostCreate runs each post_create hook script sequentially.
@@ -28,23 +29,49 @@ func RunPostCreate(scripts []string, opts RunOpts) []string {
 	env := buildEnv(opts)
 
 	for _, script := range scripts {
-		absScript := filepath.Join(opts.ProjectRoot, script)
-		if _, err := os.Stat(absScript); os.IsNotExist(err) {
-			warnings = append(warnings, fmt.Sprintf("hooks.post_create: script %q not found, skipping", script))
-			continue
-		}
-
-		cmd := exec.Command(absScript)
-		cmd.Dir = opts.WorktreePath
-		cmd.Env = env
-		cmd.Stdout = opts.Stdout
-		cmd.Stderr = opts.Stderr
-
-		if err := cmd.Run(); err != nil {
-			warnings = append(warnings, fmt.Sprintf("hooks.post_create: %q failed: %v", script, err))
+		if err := runScript("post_create", script, opts, env, true); err != nil {
+			warnings = append(warnings, err.Error())
 		}
 	}
 	return warnings
+}
+
+// RunPreDelete runs each pre_delete hook script sequentially.
+// It returns the first hook error so callers can abort deletion before the
+// worktree is removed.
+func RunPreDelete(scripts []string, opts RunOpts) error {
+	env := buildEnv(opts)
+
+	for _, script := range scripts {
+		if err := runScript("pre_delete", script, opts, env, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runScript(lifecycle, script string, opts RunOpts, env []string, skipMissing bool) error {
+	absScript := filepath.Join(opts.ProjectRoot, script)
+	if _, err := os.Stat(absScript); err != nil {
+		if os.IsNotExist(err) && skipMissing {
+			return fmt.Errorf("hooks.%s: script %q not found, skipping", lifecycle, script)
+		}
+		if os.IsNotExist(err) {
+			return fmt.Errorf("hooks.%s: script %q not found", lifecycle, script)
+		}
+		return fmt.Errorf("hooks.%s: stat %q: %w", lifecycle, script, err)
+	}
+
+	cmd := exec.Command(absScript)
+	cmd.Dir = opts.WorktreePath
+	cmd.Env = env
+	cmd.Stdout = opts.Stdout
+	cmd.Stderr = opts.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("hooks.%s: %q failed: %w", lifecycle, script, err)
+	}
+	return nil
 }
 
 func buildEnv(opts RunOpts) []string {

@@ -131,6 +131,8 @@ tmux:
 hooks:
   post_create:
     - scripts/grove-post-create.sh
+  pre_delete:
+    - scripts/grove-pre-delete.sh
 ```
 
 ### Config Reference
@@ -147,6 +149,7 @@ hooks:
 | `env` | — | Global env vars (written to all `.env.local` files) |
 | `tmux` | — | Tmux workspace configuration |
 | `hooks.post_create` | — | Scripts to run after worktree creation (before tmux setup) |
+| `hooks.pre_delete` | — | Scripts to run before tmux/worktree deletion |
 
 ## Commands
 
@@ -355,6 +358,7 @@ Each service declares its own `env_file` and `env` vars. Service-scoped vars are
 |----------|-------------|
 | `{{service.port}}` | The assigned port for a service (e.g. `{{api.port}}` → `4045`) |
 | `{{branch}}` | The worktree branch name (e.g. `feat/auth`) |
+| `{{branch.hash}}` | A stable 12-character branch hash for safe per-branch identifiers |
 
 In session mode, grove also sets top-level `env` vars plus each service's port env var via `tmux set-environment` as a fallback for tools that read env vars directly instead of `.env` files. Service-scoped `services.<name>.env` values stay in that service's `.env.local`.
 
@@ -387,15 +391,21 @@ services:
 
 ## Hooks
 
-Grove can run scripts at specific lifecycle points. Scripts run sequentially; failures produce a warning but do not block worktree creation.
+Grove can run scripts at specific lifecycle points. Scripts run sequentially.
 
 ```yaml
 hooks:
   post_create:
     - scripts/grove-post-create.sh
+  pre_delete:
+    - scripts/grove-pre-delete.sh
 ```
 
-**`post_create`** hooks run after `.env.local` files are written and before tmux setup. The working directory is set to the new worktree path.
+**`post_create`** hooks run after `.env.local` files are written and before tmux setup. Failures produce warnings and do not block worktree creation.
+
+**`pre_delete`** hooks run after safety checks and before tmux/worktree removal. A failure aborts deletion so cleanup scripts can keep the worktree available for retry.
+
+The working directory is set to the worktree path.
 
 Each script receives these environment variables:
 
@@ -688,7 +698,7 @@ tmux:
 
 Grove uses an **explicit-invocation** model — nothing happens until you run `grove create` or `grove attach`. This is the same model as `make`, `npm run`, `docker compose up`, and similar tools: you review the config, then run the command.
 
-**Pane commands and hooks are code.** The `cmd` and `setup` fields in `tmux.panes` and the scripts listed in `hooks.post_create` are executed as shell commands. Review `.grove.yml` before running `grove create` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
+**Pane commands and hooks are code.** The `cmd` and `setup` fields in `tmux.panes` and the scripts listed in `hooks.post_create` or `hooks.pre_delete` are executed as shell commands. Review `.grove.yml` before running `grove create` or `grove delete` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
 
 **Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time.
 

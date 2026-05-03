@@ -136,6 +136,125 @@ services:
 	}
 }
 
+func TestDeleteCmd_PreDeleteHookRunsBeforeRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  pre_delete:
+    - scripts/pre-delete.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hookScript := `#!/bin/bash
+if [ ! -d "$GROVE_WORKTREE" ]; then
+  exit 7
+fi
+{
+  echo "GROVE_BRANCH=$GROVE_BRANCH"
+  echo "GROVE_WORKTREE=$GROVE_WORKTREE"
+  pwd
+} > "$GROVE_PROJECT_ROOT/pre-delete-ran.txt"
+`
+	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "pre-delete.sh"), []byte(hookScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/pre-delete.sh")
+	gitRun(t, repoDir, "commit", "-m", "add pre-delete hook")
+	gitRun(t, repoDir, "branch", "feat/pre-delete")
+	wtPath := filepath.Join(worktreeDir, "feat-pre-delete")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/pre-delete")
+	wantWtPath := wtPath
+	if resolved, err := filepath.EvalSymlinks(wtPath); err == nil {
+		wantWtPath = resolved
+	}
+
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/pre-delete", "--force"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("delete command failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	data, err := os.ReadFile(filepath.Join(repoDir, "pre-delete-ran.txt"))
+	if err != nil {
+		t.Fatalf("pre-delete marker not found: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "GROVE_BRANCH=feat/pre-delete") {
+		t.Errorf("hook did not receive branch, got:\n%s", content)
+	}
+	if !strings.Contains(content, "GROVE_WORKTREE="+wantWtPath) {
+		t.Errorf("hook did not receive worktree path, got:\n%s", content)
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Errorf("expected worktree to be removed, stat err: %v", err)
+	}
+}
+
+func TestDeleteCmd_PreDeleteHookFailureAbortsRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  pre_delete:
+    - scripts/fail-pre-delete.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "fail-pre-delete.sh"), []byte("#!/bin/bash\nexit 17\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/fail-pre-delete.sh")
+	gitRun(t, repoDir, "commit", "-m", "add failing pre-delete hook")
+	gitRun(t, repoDir, "branch", "feat/pre-delete-fails")
+	wtPath := filepath.Join(worktreeDir, "feat-pre-delete-fails")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/pre-delete-fails")
+
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/pre-delete-fails", "--force"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected pre-delete failure")
+	}
+	if !strings.Contains(err.Error(), "pre-delete hook failed") {
+		t.Errorf("expected pre-delete failure, got: %v", err)
+	}
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		t.Errorf("expected worktree to remain after hook failure, stat err: %v", statErr)
+	}
+	gitCmd := exec.Command("git", "rev-parse", "--verify", "refs/heads/feat/pre-delete-fails")
+	gitCmd.Dir = repoDir
+	if _, verifyErr := gitCmd.CombinedOutput(); verifyErr != nil {
+		t.Error("branch should remain after hook failure")
+	}
+}
+
 func TestDeleteCmd_OpenPR_Aborts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

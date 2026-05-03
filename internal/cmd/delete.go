@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/lukemelnik/grove/internal/config"
+	"github.com/lukemelnik/grove/internal/hooks"
+	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/tmux"
 	"github.com/lukemelnik/grove/internal/worktree"
 
@@ -125,7 +127,47 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 4: Remove tmux targets. Prefer Grove labels so renamed windows are
+	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
+		if err := config.ValidateHookScripts("pre_delete", cfg.Hooks.PreDelete); err != nil {
+			return err
+		}
+	}
+
+	wtPath := worktree.WorktreePath(projectRoot, cfg.WorktreeDir, branch)
+	if worktrees, listErr := wtMgr.List(); listErr == nil {
+		for _, wt := range worktrees {
+			if wt.Branch == branch {
+				wtPath = wt.Path
+				break
+			}
+		}
+	}
+
+	// Step 4: Run pre-delete hooks before any destructive cleanup.
+	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
+		preDeletePorts := map[string]int{}
+		if len(cfg.Services) > 0 {
+			assignment, assignErr := ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, wtMgr.DefaultBranch())
+			if assignErr != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not assign hook ports: %v\n", assignErr)
+			} else {
+				preDeletePorts = assignment.Ports
+			}
+		}
+		hookOpts := hooks.RunOpts{
+			Branch:       branch,
+			WorktreePath: wtPath,
+			ProjectRoot:  projectRoot,
+			Ports:        preDeletePorts,
+			Stdout:       cmd.OutOrStdout(),
+			Stderr:       cmd.ErrOrStderr(),
+		}
+		if err := hooks.RunPreDelete(cfg.Hooks.PreDelete, hookOpts); err != nil {
+			return fmt.Errorf("pre-delete hook failed: %w", err)
+		}
+	}
+
+	// Step 5: Remove tmux targets. Prefer Grove labels so renamed windows are
 	// cleaned up, then fall back to legacy name lookup for older workspaces.
 	tmuxCfg := cfg.Tmux
 	if tmuxCfg == nil {
@@ -134,15 +176,6 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	{
 		tmuxRunner := tmuxRunnerFactory()
 		tmuxMgr := tmux.NewManager(tmuxRunner)
-		wtPath := worktree.WorktreePath(projectRoot, cfg.WorktreeDir, branch)
-		if worktrees, listErr := wtMgr.List(); listErr == nil {
-			for _, wt := range worktrees {
-				if wt.Branch == branch {
-					wtPath = wt.Path
-					break
-				}
-			}
-		}
 
 		killedLabeled, killErr := tmuxMgr.DestroyLabeled(projectRoot, branch, wtPath)
 		if killErr != nil {
@@ -173,7 +206,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Step 5: Remove git worktree and optionally delete branch
+	// Step 6: Remove git worktree and optionally delete branch
 	deleteBranch := !keepBranch
 	result, err := wtMgr.Remove(branch, deleteBranch, force)
 	if err != nil {

@@ -237,6 +237,16 @@ func TestResolveTemplates_Branch(t *testing.T) {
 	}
 }
 
+func TestResolveTemplates_BranchHash(t *testing.T) {
+	result, err := ResolveTemplates("db_{{branch.hash}}", map[string]int{}, "feat/auth")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != "db_3a9c5546d5c1" {
+		t.Errorf("expected branch hash template to resolve, got %q", result)
+	}
+}
+
 func TestResolve_FullPipeline(t *testing.T) {
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")

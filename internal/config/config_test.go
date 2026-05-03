@@ -973,6 +973,27 @@ hooks:
 	}
 }
 
+func TestParse_HooksPreDelete(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  pre_delete:
+    - scripts/cleanup.sh
+`)
+	cfg, err := Parse(yaml)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Hooks == nil {
+		t.Fatal("expected hooks config")
+	}
+	if len(cfg.Hooks.PreDelete) != 1 {
+		t.Fatalf("expected 1 pre_delete hook, got %d", len(cfg.Hooks.PreDelete))
+	}
+	if cfg.Hooks.PreDelete[0] != "scripts/cleanup.sh" {
+		t.Errorf("expected pre_delete hook 'scripts/cleanup.sh', got %s", cfg.Hooks.PreDelete[0])
+	}
+}
+
 func TestParse_HooksAbsolutePath(t *testing.T) {
 	yaml := []byte(`
 hooks:
@@ -1031,6 +1052,21 @@ hooks:
 	}
 	if !strings.Contains(err.Error(), "duplicate script") {
 		t.Errorf("expected duplicate error, got: %v", err)
+	}
+}
+
+func TestParse_HooksPreDeleteInvalidPath(t *testing.T) {
+	yaml := []byte(`
+hooks:
+  pre_delete:
+    - /tmp/cleanup.sh
+`)
+	_, err := Parse(yaml)
+	if err == nil {
+		t.Fatal("expected error for absolute pre_delete hook")
+	}
+	if !strings.Contains(err.Error(), "hooks.pre_delete") || !strings.Contains(err.Error(), "must be a relative path") {
+		t.Errorf("expected pre_delete relative path error, got: %v", err)
 	}
 }
 

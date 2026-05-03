@@ -43,6 +43,7 @@ env_files:
 # Template variables:
 #   {{service_name.port}} — resolves to the assigned port for a service
 #   {{branch}}            — resolves to the worktree branch name
+#   {{branch.hash}}       — resolves to a stable 12-character hash of the branch
 services:
   api:
     env_file: apps/api/.env
@@ -139,18 +140,22 @@ tmux:
 
 # Hooks — scripts to run at specific lifecycle points.
 # Scripts are resolved relative to the project root.
-# Working directory is set to the new worktree path.
+# Working directory is set to the worktree path.
 # Environment includes GROVE_BRANCH, GROVE_WORKTREE, GROVE_PROJECT_ROOT,
 # and GROVE_PORT_<SERVICE> (uppercased) for each service with a port.
-# Scripts run after .env.local files are written, before tmux setup.
-# On failure: a warning is printed, but create continues.
+# post_create scripts run after .env.local files are written, before tmux setup.
+# On post_create failure: a warning is printed, but create continues.
+# pre_delete scripts run after safety checks, before tmux/worktree removal.
+# On pre_delete failure: delete aborts and the worktree is kept.
 #
 # NOTE: Hook scripts are executed as shell commands — review them before
-# running grove create in an unfamiliar repo, just as you would review
+# running grove create/delete in an unfamiliar repo, just as you would review
 # a Makefile or docker-compose.yml.
 hooks:
   post_create:
     - scripts/grove-post-create.sh
+  pre_delete:
+    - scripts/grove-pre-delete.sh
 `
 
 func newSchemaCmd() *cobra.Command {

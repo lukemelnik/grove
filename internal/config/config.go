@@ -65,6 +65,10 @@ type HooksConfig struct {
 	// PostCreate lists scripts to run after worktree creation.
 	// Paths are relative to the project root and cannot escape it.
 	PostCreate []string `yaml:"post_create,omitempty"`
+
+	// PreDelete lists scripts to run before worktree deletion.
+	// Paths are relative to the project root and cannot escape it.
+	PreDelete []string `yaml:"pre_delete,omitempty"`
 }
 
 // Service represents a service with a base port, an env file, and optional env vars.
@@ -123,7 +127,6 @@ func (sp *ServicePort) UnmarshalYAML(value *yaml.Node) error {
 func (s Service) HasPort() bool {
 	return s.Port.Base != 0 || s.Port.Env != ""
 }
-
 
 // TmuxConfig represents the tmux workspace configuration.
 type TmuxConfig struct {
@@ -308,6 +311,28 @@ func (cfg *Config) AllEnvFiles() []string {
 	return result
 }
 
+// ValidateHookScripts checks that hook script paths are safe and unique for a lifecycle.
+func ValidateHookScripts(lifecycle string, scripts []string) error {
+	seen := make(map[string]bool)
+	for _, script := range scripts {
+		if script == "" {
+			return fmt.Errorf("hooks.%s: script path must not be empty", lifecycle)
+		}
+		if filepath.IsAbs(script) {
+			return fmt.Errorf("hooks.%s: %q must be a relative path", lifecycle, script)
+		}
+		cleaned := filepath.Clean(script)
+		if strings.HasPrefix(cleaned, "..") {
+			return fmt.Errorf("hooks.%s: %q escapes the project root", lifecycle, script)
+		}
+		if seen[cleaned] {
+			return fmt.Errorf("hooks.%s: duplicate script %q", lifecycle, script)
+		}
+		seen[cleaned] = true
+	}
+	return nil
+}
+
 // Validate checks that the config is well-formed.
 func Validate(cfg *Config) error {
 	// Validate services
@@ -395,22 +420,11 @@ func Validate(cfg *Config) error {
 
 	// Validate hooks
 	if cfg.Hooks != nil {
-		seen := make(map[string]bool)
-		for _, script := range cfg.Hooks.PostCreate {
-			if script == "" {
-				return fmt.Errorf("hooks.post_create: script path must not be empty")
-			}
-			if filepath.IsAbs(script) {
-				return fmt.Errorf("hooks.post_create: %q must be a relative path", script)
-			}
-			cleaned := filepath.Clean(script)
-			if strings.HasPrefix(cleaned, "..") {
-				return fmt.Errorf("hooks.post_create: %q escapes the project root", script)
-			}
-			if seen[cleaned] {
-				return fmt.Errorf("hooks.post_create: duplicate script %q", script)
-			}
-			seen[cleaned] = true
+		if err := ValidateHookScripts("post_create", cfg.Hooks.PostCreate); err != nil {
+			return err
+		}
+		if err := ValidateHookScripts("pre_delete", cfg.Hooks.PreDelete); err != nil {
+			return err
 		}
 	}
 

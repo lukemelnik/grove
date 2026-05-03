@@ -7,6 +7,8 @@
 package env
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,8 +19,13 @@ import (
 	"github.com/lukemelnik/grove/internal/config"
 )
 
-// templatePattern matches {{service.port}} and {{branch}} references in env values.
+// templatePattern matches {{service.port}}, {{branch}}, and {{branch.hash}} references in env values.
 var templatePattern = regexp.MustCompile(`\{\{(\w+(?:\.\w+)?)\}\}`)
+
+func branchHash(branch string) string {
+	sum := sha1.Sum([]byte(branch))
+	return hex.EncodeToString(sum[:])[:12]
+}
 
 // ParseEnvFile reads a .env file and returns a map of key-value pairs.
 // It handles:
@@ -85,8 +92,8 @@ func ParseEnvContent(content string) (map[string]string, error) {
 	return result, nil
 }
 
-// ResolveTemplates replaces {{service.port}} and {{branch}} references in a
-// string using the provided port map and branch name.
+// ResolveTemplates replaces {{service.port}}, {{branch}}, and {{branch.hash}}
+// references in a string using the provided port map and branch name.
 // Returns the resolved string and an error if any referenced template is unknown.
 func ResolveTemplates(value string, ports map[string]int, branch string) (string, error) {
 	var resolveErr error
@@ -100,6 +107,9 @@ func ResolveTemplates(value string, ports map[string]int, branch string) (string
 
 		if ref == "branch" {
 			return branch
+		}
+		if ref == "branch.hash" {
+			return branchHash(branch)
 		}
 
 		parts := strings.SplitN(ref, ".", 2)
