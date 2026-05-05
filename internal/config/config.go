@@ -456,12 +456,26 @@ func validatePanes(panes []Pane) error {
 	return nil
 }
 
-// Discover walks up from startDir looking for a .grove.yml file.
-// Returns the path to the config file and the project root directory.
-// If no config file is found in the directory tree, it checks whether
-// we're inside a git worktree and looks in the main repo root. This
-// lets you run grove commands from any worktree even if .grove.yml is
-// untracked (only exists in the main repo).
+func samePath(a, b string) bool {
+	a = filepath.Clean(a)
+	b = filepath.Clean(b)
+	if a == b {
+		return true
+	}
+	if resolved, err := filepath.EvalSymlinks(a); err == nil {
+		a = filepath.Clean(resolved)
+	}
+	if resolved, err := filepath.EvalSymlinks(b); err == nil {
+		b = filepath.Clean(resolved)
+	}
+	return a == b
+}
+
+// Discover finds the .grove.yml file and canonical project root.
+// When run inside a linked worktree, it prefers the main worktree's config so
+// relative paths and env symlinks are anchored to the same root from anywhere.
+// If no main-root config exists, it walks up from startDir within the current
+// worktree and finally falls back to the main repo root.
 func Discover(startDir string) (configPath string, projectRoot string, err error) {
 	dir, err := filepath.Abs(startDir)
 	if err != nil {
@@ -481,6 +495,16 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 			dir,
 			ConfigFileName,
 		)
+	}
+
+	// If this command is running from a linked worktree, prefer the main
+	// worktree's config so relative paths are anchored to one canonical root.
+	mainRoot, mainRootErr := gitMainRepoRoot(dir)
+	if mainRootErr == nil && mainRoot != "" && !samePath(repoRoot, mainRoot) {
+		candidate := filepath.Join(mainRoot, ConfigFileName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, mainRoot, nil
+		}
 	}
 
 	// Walk up the directory tree, stopping at the git repo root
@@ -503,8 +527,7 @@ func Discover(startDir string) (configPath string, projectRoot string, err error
 
 	// Fallback: if we're in a git worktree, check the main repo root.
 	// git rev-parse --git-common-dir returns the main repo's .git dir.
-	mainRoot, err := gitMainRepoRoot(startDir)
-	if err == nil && mainRoot != "" {
+	if mainRootErr == nil && mainRoot != "" {
 		candidate := filepath.Join(mainRoot, ConfigFileName)
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, mainRoot, nil

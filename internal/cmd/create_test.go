@@ -700,6 +700,95 @@ hooks:
 	}
 }
 
+func TestCreateCmd_FromLinkedWorktreeUsesMainProjectRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	groveYML := `worktree_dir: ../worktrees
+env_files:
+  - config/root
+services:
+  api:
+    env_file: apps/api/config
+    port:
+      base: 4000
+      env: PORT
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "root"), []byte("BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoDir, "apps", "api"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "apps", "api", "config"), []byte("API_BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	gitRun(t, repoDir, "add", ".")
+	gitRun(t, repoDir, "commit", "-m", "add env config")
+	gitRun(t, repoDir, "branch", "feat/parent")
+	gitRun(t, repoDir, "branch", "feat/child")
+
+	worktreeBase := filepath.Clean(filepath.Join(repoDir, "..", "worktrees"))
+	if err := os.MkdirAll(worktreeBase, 0755); err != nil {
+		t.Fatal(err)
+	}
+	parentPath := filepath.Join(worktreeBase, worktree.SanitizeBranchName("feat/parent"))
+	gitRun(t, repoDir, "worktree", "add", parentPath, "feat/parent")
+
+	mockWorkingDir(t, parentPath)
+	mockTerminal(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/child", "--no-tmux"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create from linked worktree failed: %v\nOutput: %s", err, buf.String())
+	}
+
+	childPath := filepath.Join(worktreeBase, worktree.SanitizeBranchName("feat/child"))
+	if _, err := os.Stat(childPath); err != nil {
+		t.Fatalf("expected child worktree at main-root-relative path %s: %v", childPath, err)
+	}
+
+	nestedPath := filepath.Join(filepath.Clean(filepath.Join(parentPath, "..", "worktrees")), worktree.SanitizeBranchName("feat/child"))
+	if nestedPath != childPath {
+		if _, err := os.Stat(nestedPath); err == nil {
+			t.Fatalf("child worktree was created relative to parent worktree at %s", nestedPath)
+		}
+	}
+
+	assertSymlinkTarget := func(relPath string) {
+		t.Helper()
+		linkPath := filepath.Join(childPath, relPath)
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Fatalf("expected symlink at %s: %v", linkPath, err)
+		}
+		targetAbs := target
+		if !filepath.IsAbs(targetAbs) {
+			targetAbs = filepath.Join(filepath.Dir(linkPath), targetAbs)
+		}
+		targetAbs = filepath.Clean(targetAbs)
+		want := filepath.Clean(filepath.Join(repoDir, relPath))
+		if targetAbs != want {
+			t.Fatalf("expected %s to point at %s, got %s", linkPath, want, targetAbs)
+		}
+	}
+
+	assertSymlinkTarget(filepath.Join("config", "root"))
+	assertSymlinkTarget(filepath.Join("apps", "api", "config"))
+}
+
 func TestCreateCmd_NoTmuxAliasSkipsTmux(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

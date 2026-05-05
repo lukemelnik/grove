@@ -16,11 +16,16 @@ func initGitRepo(t *testing.T, dir string) {
 		{"config", "user.name", "Grove Test"},
 		{"commit", "--allow-empty", "-m", "init"},
 	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v failed: %s: %v", args, out, err)
-		}
+		gitRun(t, dir, args...)
+	}
+}
+
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v failed: %s: %v", args, out, err)
 	}
 }
 
@@ -1109,5 +1114,43 @@ func TestDiscover_SymlinkDir(t *testing.T) {
 	}
 	if projectRoot != realDir {
 		t.Errorf("expected project root %s, got %s", realDir, projectRoot)
+	}
+}
+
+func TestDiscover_LinkedWorktreePrefersMainRepoConfig(t *testing.T) {
+	mainRepo := t.TempDir()
+	initGitRepo(t, mainRepo)
+
+	configPath := filepath.Join(mainRepo, ConfigFileName)
+	if err := os.WriteFile(configPath, []byte("{}"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, mainRepo, "add", ConfigFileName)
+	gitRun(t, mainRepo, "commit", "-m", "add grove config")
+	gitRun(t, mainRepo, "branch", "feat/from-worktree")
+
+	worktreePath := filepath.Join(t.TempDir(), "feat-from-worktree")
+	gitRun(t, mainRepo, "worktree", "add", worktreePath, "feat/from-worktree")
+
+	worktreeConfigPath := filepath.Join(worktreePath, ConfigFileName)
+	if _, err := os.Stat(worktreeConfigPath); err != nil {
+		t.Fatalf("expected tracked config in linked worktree: %v", err)
+	}
+
+	childDir := filepath.Join(worktreePath, "nested", "child")
+	if err := os.MkdirAll(childDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	foundPath, projectRoot, err := Discover(childDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !samePath(foundPath, configPath) {
+		t.Errorf("expected main config at %s, got %s", configPath, foundPath)
+	}
+	if !samePath(projectRoot, mainRepo) {
+		t.Errorf("expected main project root %s, got %s", mainRepo, projectRoot)
 	}
 }
