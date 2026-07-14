@@ -138,19 +138,21 @@ func runClean(cmd *cobra.Command, args []string) error {
 	// Step 6: Clean each stale worktree
 	var cleaned []staleWorktree
 	for _, s := range stale {
-		// Kill Grove-labeled tmux targets, with legacy name fallback.
-		tmuxCfg := cfg.Tmux
-		if tmuxCfg == nil {
-			tmuxCfg = &config.TmuxConfig{}
-		}
-		destroyTmuxForBranch(cmd, s.Branch, projectRoot, s.Worktree, tmuxCfg)
-
 		// Stale branches can still have local edits, so only force removal when
 		// the user explicitly asked for it.
 		if _, err := wtMgr.Remove(s.Branch, true, force); err != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not remove worktree for %s: %v\n", s.Branch, err)
 			continue
 		}
+
+		// Kill Grove-labeled tmux targets, with legacy name fallback, only after
+		// the worktree was successfully removed.
+		tmuxCfg := cfg.Tmux
+		if tmuxCfg == nil {
+			tmuxCfg = &config.TmuxConfig{}
+		}
+		// The removed worktree path may no longer normalize to its stored label.
+		destroyTmuxForBranch(cmd, s.Branch, projectRoot, "", tmuxCfg)
 
 		cleaned = append(cleaned, s)
 		if !jsonOutput {

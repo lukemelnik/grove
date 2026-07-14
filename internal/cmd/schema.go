@@ -19,15 +19,18 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 
 # Env files to symlink from the main repo (for files not tied to a service).
 # Paths must be relative to the project root and cannot escape it.
-# Grove writes .env.local files next to each symlink with managed vars.
+# Canonical sources are never modified; main-worktree symlinking is a no-op.
+# Existing regular destinations are preserved and rejected. Missing sources are
+# optional, but unsafe/corrupt sources abort setup. Grove never logs their values.
+# Grove atomically writes marker-owned .env.local files next to each symlink.
 # Service env files (see services below) are auto-included — no need to
 # list them here too.
 env_files:
   - .env
 
 # Services with base ports. The default branch (main/master) uses the base
-# ports directly. Other branches get a deterministic offset added,
-# so branches never collide.
+# ports directly. Other branches get a deterministic hash-based offset.
+# Hash collisions between different branch names are possible.
 #
 # Each service can declare:
 #   port:     base port and the env var name that receives the assigned port (optional)

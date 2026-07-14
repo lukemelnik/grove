@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,7 +56,7 @@ tmux:
 
 	runner := &recordingTmuxRunner{
 		outputs: map[string]string{
-			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "",
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
 			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@9\tdev\trenamed-by-user\t" + repoDir + "\tfeat/open-labeled\t" + wtPath + "\tcanonical",
 		},
 	}
@@ -123,6 +125,186 @@ tmux:
 	}
 }
 
+func TestOpenCmd_MainWorktreeRecreationPreservesCanonicalEnvSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+tmux:
+  mode: session
+  panes:
+    - nvim
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(repoDir, "config", "secrets")
+	want := []byte("synthetic fixture bytes\nline two\n")
+	if err := os.WriteFile(sourcePath, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "")
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "main"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("open main failed: %v\nOutput: %s", err, buf.String())
+	}
+	got, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading synthetic source after open: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("canonical source changed: got %q, want %q", got, want)
+	}
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		t.Fatalf("lstat synthetic source: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("canonical source mode = %v, want regular file", info.Mode())
+	}
+	if !tmuxCommandSeen(runner, "new-session") {
+		t.Fatalf("expected absent canonical workspace to be recreated, got %v", runner.commands)
+	}
+}
+
+func TestOpenCmd_EnvCollisionFailsClosedBeforeTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/env-collision")
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/env-collision")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/env-collision")
+
+	for _, root := range []string{repoDir, wtPath} {
+		if err := os.MkdirAll(filepath.Join(root, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "secrets"), []byte("canonical fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(wtPath, "config", "secrets")
+	wantDestination := []byte("user-managed fixture\n")
+	if err := os.WriteFile(destination, wantDestination, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "")
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "feat/env-collision"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected open to reject a regular env destination")
+	}
+	if !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("expected actionable regular-file collision error, got %v", err)
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || !bytes.Equal(got, wantDestination) {
+		t.Fatalf("destination changed: got %q err=%v", got, readErr)
+	}
+	if tmuxCommandSeen(runner, "new-session") || tmuxCommandSeen(runner, "new-window") {
+		t.Fatalf("unsafe env sync must fail before workspace launch, got %v", runner.commands)
+	}
+}
+
+func TestOpenCmd_NewWindowEnvCollisionFailsBeforeCreation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/new-window-collision")
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/new-window-collision")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/new-window-collision")
+	for _, root := range []string{repoDir, wtPath} {
+		if err := os.MkdirAll(filepath.Join(root, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "secrets"), []byte("canonical fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(wtPath, "config", "secrets")
+	wantDestination := []byte("user fixture\n")
+	if err := os.WriteFile(destination, wantDestination, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := &recordingTmuxRunner{
+		currentSession: "dev",
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@9\tdev\trenamed\t" + repoDir + "\tfeat/new-window-collision\t" + wtPath + "\tcanonical",
+		},
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "feat/new-window-collision", "--new-window"})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatal("expected --new-window to reject unsafe env synchronization")
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || !bytes.Equal(got, wantDestination) {
+		t.Fatalf("destination changed: got %q err=%v", got, readErr)
+	}
+	if tmuxCommandSeen(runner, "new-window") {
+		t.Fatalf("extra window created despite unsafe env sync: %v", runner.commands)
+	}
+}
+
 func TestOpenCmd_NewWindowCreatesExtraWhenCanonicalExists(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -144,7 +326,7 @@ tmux:
 	runner := &recordingTmuxRunner{
 		currentSession: "dev",
 		outputs: map[string]string{
-			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "",
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
 			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@9\tdev\trenamed\t" + repoDir + "\tfeat/open-extra\t" + wtPath + "\tcanonical",
 		},
 	}
@@ -282,7 +464,7 @@ tmux:
 
 	runner := &recordingTmuxRunner{
 		outputs: map[string]string{
-			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "grove-session\t" + repoDir + "\tfeat/open-auto-json\t" + wtPath + "\tcanonical",
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "grove-session\t" + repoDir + "\tfeat/open-auto-json\t" + wtPath + "\tcanonical",
 			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "",
 		},
 	}

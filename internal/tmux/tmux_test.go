@@ -2,6 +2,8 @@ package tmux
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -90,6 +92,69 @@ func (m *mockRunner) commandString() string {
 		lines = append(lines, fmt.Sprintf("  [%d] tmux %s", i, strings.Join(cmd, " ")))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func TestRealRunnerRedactsSetEnvironmentErrors(t *testing.T) {
+	installFailingTmux(t)
+
+	secretValue := "super-secret-managed-env-value"
+	out, err := (&realRunner{}).Run("set-environment", "-t", "safe-session", "API_TOKEN", secretValue)
+	if err == nil {
+		t.Fatal("expected failing tmux error")
+	}
+	if out != "" {
+		t.Fatalf("sensitive tmux output was returned: %q", out)
+	}
+
+	errText := err.Error()
+	for _, want := range []string{"set-environment", "safe-session", "API_TOKEN", redactedTmuxArg} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("expected sanitized error to contain %q, got %q", want, errText)
+		}
+	}
+	for _, leaked := range []string{secretValue, out} {
+		if leaked != "" && strings.Contains(errText, leaked) {
+			t.Fatalf("sanitized error leaked %q in %q", leaked, errText)
+		}
+	}
+}
+
+func TestRealRunnerRedactsSendKeysErrors(t *testing.T) {
+	installFailingTmux(t)
+
+	setupPayload := "export API_TOKEN=setup-secret"
+	commandPayload := "pnpm dev --password command-secret"
+	out, err := (&realRunner{}).Run("send-keys", "-t", "%7", setupPayload+" && "+commandPayload, "Enter")
+	if err == nil {
+		t.Fatal("expected failing tmux error")
+	}
+	if out != "" {
+		t.Fatalf("sensitive tmux output was returned: %q", out)
+	}
+
+	errText := err.Error()
+	for _, want := range []string{"send-keys", "%7", redactedTmuxArg} {
+		if !strings.Contains(errText, want) {
+			t.Fatalf("expected sanitized error to contain %q, got %q", want, errText)
+		}
+	}
+	for _, leaked := range []string{setupPayload, commandPayload, "Enter", out} {
+		if leaked != "" && strings.Contains(errText, leaked) {
+			t.Fatalf("sanitized error leaked %q in %q", leaked, errText)
+		}
+	}
+}
+
+func installFailingTmux(t *testing.T) {
+	t.Helper()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\nprintf 'synthetic tmux echoed args: %s\\n' \"$*\" >&2\nexit 42\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("writing fake tmux: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func TestSessionName(t *testing.T) {
@@ -1455,6 +1520,45 @@ func TestHasSession(t *testing.T) {
 			t.Error("expected HasSession to return false when error")
 		}
 	})
+}
+
+func TestCreateWindow_DoesNotReuseSameNameFromAnotherSession(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},shared-name}"] = "shared-name"
+	runner.outputs["list-windows -t current -F #{window_name} -f #{==:#{window_name},shared-name}"] = ""
+	runner.outputs["new-window -P -F #{window_id} -t current -n shared-name -c /worktree"] = "@42"
+	mgr := NewManager(runner)
+
+	target, err := mgr.createWindow("current", "shared-name", "/worktree", false)
+	if err != nil {
+		t.Fatalf("createWindow failed: %v", err)
+	}
+	if target != "@42" {
+		t.Fatalf("target = %q, want newly created window id @42", target)
+	}
+	if runner.findCommand("new-window", "-P", "-F", "#{window_id}", "-t", "current") < 0 {
+		t.Fatalf("expected a new window in current session, got:\n%s", runner.commandString())
+	}
+	if runner.findCommand("list-windows", "-a") >= 0 {
+		t.Fatalf("createWindow used global window lookup: %s", runner.commandString())
+	}
+}
+
+func TestCreateWindow_ReusesSameNameOnlyInRequestedSession(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-windows -t current -F #{window_name} -f #{==:#{window_name},shared-name}"] = "shared-name"
+	mgr := NewManager(runner)
+
+	target, err := mgr.createWindow("current", "shared-name", "/worktree", false)
+	if err != nil {
+		t.Fatalf("createWindow failed: %v", err)
+	}
+	if target != "current:shared-name" {
+		t.Fatalf("target = %q, want unambiguous current-session target", target)
+	}
+	if runner.findCommand("new-window") >= 0 {
+		t.Fatalf("unexpected new window: %s", runner.commandString())
+	}
 }
 
 func TestHasWindow(t *testing.T) {

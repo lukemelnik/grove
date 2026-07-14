@@ -72,7 +72,7 @@ func openBranch(cmd *cobra.Command, branch string, newWindow bool) error {
 		}
 	}
 
-	if err := syncWorktreeEnv(cmd, ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
+	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
 		return outputError(cmd, err)
 	}
 

@@ -7,8 +7,6 @@ import (
 	"github.com/lukemelnik/grove/internal/env"
 	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/worktree"
-
-	"github.com/spf13/cobra"
 )
 
 type projectContext struct {
@@ -83,14 +81,14 @@ func findWorktreeByBranch(ctx *projectContext, branch string) (*worktree.Info, e
 	return nil, fmt.Errorf("no worktree found for branch %q — create it first with: grove create %s", branch, branch)
 }
 
-func syncWorktreeEnv(cmd *cobra.Command, cfg *config.Config, projectRoot, worktreePath string, managed *env.ManagedEnv) error {
+func syncWorktreeEnv(cfg *config.Config, projectRoot, worktreePath string, managed *env.ManagedEnv) error {
 	allEnvFiles := cfg.AllEnvFiles()
 	if len(allEnvFiles) == 0 {
 		return nil
 	}
 
 	if err := env.SymlinkEnvFiles(allEnvFiles, projectRoot, worktreePath); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not symlink env files: %v\n", err)
+		return fmt.Errorf("synchronizing env files: %w", err)
 	}
 
 	mappings, err := managed.EnvLocalMappings(cfg, projectRoot)
@@ -99,7 +97,7 @@ func syncWorktreeEnv(cmd *cobra.Command, cfg *config.Config, projectRoot, worktr
 	}
 	if len(mappings) > 0 {
 		if err := env.WriteEnvLocals(mappings, worktreePath); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not write .env.local files: %v\n", err)
+			return fmt.Errorf("writing managed env files: %w", err)
 		}
 	}
 

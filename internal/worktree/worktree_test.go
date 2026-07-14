@@ -426,22 +426,71 @@ func TestManager_Remove(t *testing.T) {
 	})
 
 	t.Run("deletes branch when stale worktree metadata still exists", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		worktreeDir := filepath.Join(projectRoot, "worktrees")
+		path := branchPath(worktreeDir, "feat/ghost")
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatalf("failed to create path: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", "feat-ghost")+"\n"), 0644); err != nil {
+			t.Fatalf("failed to write .git file: %v", err)
+		}
+
 		git := newMockGitRunner()
-		path := branchPath("/worktrees", "feat/ghost")
 		git.On("worktree remove --force "+path, "", fmt.Errorf("%s", "git worktree remove: "+path+" is not a working tree"))
 		git.On("worktree list --porcelain",
-			"worktree /project\nHEAD abc\nbranch refs/heads/main\n\n"+
+			"worktree "+projectRoot+"\nHEAD abc\nbranch refs/heads/main\n\n"+
 				"worktree "+path+"\nHEAD def\nbranch refs/heads/feat/ghost\n", nil)
 		git.On("worktree prune", "", nil)
 		git.On("branch -D -- feat/ghost", "", nil)
 
-		mgr := NewManager(git, "/project", "/worktrees")
+		mgr := NewManager(git, projectRoot, worktreeDir)
 		result, err := mgr.Remove("feat/ghost", true, true)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if !result.BranchDeleted {
 			t.Error("expected branch deletion after ghost cleanup")
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected stale worktree directory to be removed, stat err: %v", statErr)
+		}
+	})
+
+	t.Run("refuses registered stale path replaced by ordinary directory", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		worktreeDir := filepath.Join(projectRoot, "worktrees")
+		path := branchPath(worktreeDir, "feat/replaced")
+		if err := os.MkdirAll(path, 0755); err != nil {
+			t.Fatalf("failed to create path: %v", err)
+		}
+		marker := filepath.Join(path, "keep.txt")
+		if err := os.WriteFile(marker, []byte("user data"), 0644); err != nil {
+			t.Fatalf("failed to write marker: %v", err)
+		}
+
+		git := newMockGitRunner()
+		git.On("worktree remove --force "+path, "", fmt.Errorf("%s", "git worktree remove: "+path+" is not a working tree"))
+		git.On("worktree list --porcelain",
+			"worktree "+projectRoot+"\nHEAD abc\nbranch refs/heads/main\n\n"+
+				"worktree "+path+"\nHEAD def\nbranch refs/heads/feat/replaced\n", nil)
+
+		mgr := NewManager(git, projectRoot, worktreeDir)
+		_, err := mgr.Remove("feat/replaced", true, true)
+		if err == nil {
+			t.Fatal("expected error for ordinary directory at registered stale path")
+		}
+		if !strings.Contains(err.Error(), "no longer looks like a git worktree") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got, readErr := os.ReadFile(marker); readErr != nil || string(got) != "user data" {
+			t.Fatalf("expected ordinary directory contents to survive, got %q err %v", string(got), readErr)
+		}
+		if git.wasCalled("worktree prune") {
+			t.Fatal("should not prune before refusing ordinary replacement directory")
+		}
+		if git.wasCalled("branch -D -- feat/replaced") {
+			t.Fatal("branch should not be deleted when registered path is ordinary directory")
 		}
 	})
 
@@ -903,7 +952,7 @@ func TestIntegration_FindByPath(t *testing.T) {
 
 func TestCheckUnpushed_NoRemote(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "", fmt.Errorf("not found"))
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "", fmt.Errorf("not found"))
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")
@@ -920,7 +969,7 @@ func TestCheckUnpushed_NoRemote(t *testing.T) {
 
 func TestCheckUnpushed_HasUnpushed(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "abc123", nil)
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
 	mock.On("rev-list --count origin/feat/test..feat/test", "3", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
@@ -936,9 +985,20 @@ func TestCheckUnpushed_HasUnpushed(t *testing.T) {
 	}
 }
 
+func TestCheckUnpushed_InvalidCountFailsClosed(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
+	mock.On("rev-list --count origin/feat/test..feat/test", "not-a-count", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	if _, _, err := mgr.CheckUnpushed("feat/test"); err == nil {
+		t.Fatal("expected invalid unpushed count to return an error")
+	}
+}
+
 func TestCheckUnpushed_AllPushed(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "abc123", nil)
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
 	mock.On("rev-list --count origin/feat/test..feat/test", "0", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
@@ -956,8 +1016,8 @@ func TestCheckUnpushed_AllPushed(t *testing.T) {
 
 func TestCheckUnpushed_Gone(t *testing.T) {
 	mock := newMockGitRunner()
-	// Remote ref is gone
-	mock.On("rev-parse --verify refs/remotes/origin/feat/test", "", fmt.Errorf("not found"))
+	// Upstream is gone
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "", fmt.Errorf("not found"))
 	// But branch config still has upstream tracking (was pushed before)
 	mock.On("config --get branch.feat/test.remote", "origin", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
@@ -971,6 +1031,24 @@ func TestCheckUnpushed_Gone(t *testing.T) {
 	}
 	if count != 0 {
 		t.Errorf("expected count 0, got %d", count)
+	}
+}
+
+func TestCheckUnpushed_NonOriginUpstream(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "fork/feat/test", nil)
+	mock.On("rev-list --count fork/feat/test..feat/test", "2", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedCommits {
+		t.Errorf("expected UnpushedCommits, got %d", status)
+	}
+	if count != 2 {
+		t.Errorf("expected count 2, got %d", count)
 	}
 }
 

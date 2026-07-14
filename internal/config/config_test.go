@@ -934,6 +934,52 @@ env_files:
 	}
 }
 
+func TestParse_RejectsInvalidManagedEnvNames(t *testing.T) {
+	tests := map[string]string{
+		"top-level env key": `
+env:
+  "BAD=NAME": value
+`,
+		"service env key": `
+services:
+  api:
+    env_file: config/secrets
+    env:
+      "BAD-NAME": value
+`,
+		"port env key": `
+services:
+  api:
+    port:
+      base: 4000
+      var: "BAD-NAME"
+`,
+	}
+	for name, input := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Parse([]byte(input)); err == nil {
+				t.Fatal("expected invalid environment variable name error")
+			}
+		})
+	}
+}
+
+func TestParse_RejectsManagedEnvNewlinesWithoutExposingValue(t *testing.T) {
+	input := []byte(`
+env:
+  SAFE_NAME: |
+    synthetic-secret-value
+    INJECTED=1
+`)
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected multiline environment value error")
+	}
+	if strings.Contains(err.Error(), "synthetic-secret-value") {
+		t.Fatalf("error exposed environment value: %v", err)
+	}
+}
+
 func TestParse_ServiceEnvRequiresEnvFile(t *testing.T) {
 	yaml := []byte(`
 services:

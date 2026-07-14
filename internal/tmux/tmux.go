@@ -34,9 +34,48 @@ func (r *realRunner) Run(args ...string) (string, error) {
 	out, err := cmd.CombinedOutput()
 	output := strings.TrimSpace(string(out))
 	if err != nil {
+		if isSensitiveTmuxCommand(args) {
+			return "", fmt.Errorf("tmux %s: %w", sanitizedTmuxArgs(args), err)
+		}
 		return output, fmt.Errorf("tmux %s: %s: %w", strings.Join(args, " "), output, err)
 	}
 	return output, nil
+}
+
+const redactedTmuxArg = "[redacted]"
+
+func isSensitiveTmuxCommand(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	return args[0] == "set-environment" || args[0] == "send-keys"
+}
+
+func sanitizedTmuxArgs(args []string) string {
+	if len(args) == 0 {
+		return ""
+	}
+
+	sanitized := append([]string(nil), args...)
+	switch args[0] {
+	case "set-environment":
+		if len(sanitized) > 0 {
+			sanitized[len(sanitized)-1] = redactedTmuxArg
+		}
+	case "send-keys":
+		redactSendKeysArgs(sanitized)
+	}
+	return strings.Join(sanitized, " ")
+}
+
+func redactSendKeysArgs(args []string) {
+	for i := 1; i < len(args); i++ {
+		if args[i] == "-t" && i+1 < len(args) {
+			i++ // Preserve only the target; every typed key/payload is sensitive.
+			continue
+		}
+		args[i] = redactedTmuxArg
+	}
 }
 
 // presetLayouts lists all valid tmux preset layout names.
@@ -494,10 +533,11 @@ func (m *Manager) createSession(name, workdir string) error {
 }
 
 // createWindow creates a new window in the given session.
-// If a window with the same name already exists, it is reused unless force is true.
+// If that session already has a window with the same name, it is reused unless
+// force is true. Windows in other sessions must never be adopted or modified.
 func (m *Manager) createWindow(session, name, workdir string, force bool) (string, error) {
-	if !force && m.HasWindow(name) {
-		return name, nil
+	if !force && m.hasWindowInSession(session, name) {
+		return session + ":" + name, nil
 	}
 	out, err := m.runner.Run("new-window", "-P", "-F", "#{window_id}", "-t", session, "-n", name, "-c", workdir)
 	if err != nil {
@@ -508,6 +548,11 @@ func (m *Manager) createWindow(session, name, workdir string, force bool) (strin
 		return name, nil
 	}
 	return out, nil
+}
+
+func (m *Manager) hasWindowInSession(session, name string) bool {
+	out, err := m.runner.Run("list-windows", "-t", session, "-F", "#{window_name}", "-f", "#{==:#{window_name},"+escapeTmuxFilter(name)+"}")
+	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // currentSession returns the name of the current tmux session, or error if not inside tmux.

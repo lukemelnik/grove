@@ -631,6 +631,137 @@ services:
 	}
 }
 
+func TestDeleteCmd_GoneBranchWithUniqueLocalCommit_BlocksDelete(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+services:
+  api:
+    port:
+      base: 4000
+      env: PORT
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	remoteDir := t.TempDir()
+
+	run := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s failed in %s: %s: %v", strings.Join(args, " "), dir, string(out), err)
+		}
+	}
+
+	run(remoteDir, "init", "--bare", "-b", "main")
+	run(repoDir, "remote", "add", "origin", remoteDir)
+	run(repoDir, "push", "-u", "origin", "main")
+	run(repoDir, "checkout", "-b", "feat/gone-unique")
+	run(repoDir, "push", "-u", "origin", "feat/gone-unique")
+	run(repoDir, "checkout", "main")
+	wtPath := filepath.Join(worktreeDir, "feat-gone-unique")
+	run(repoDir, "worktree", "add", wtPath, "feat/gone-unique")
+	run(repoDir, "push", "origin", "--delete", "feat/gone-unique")
+	run(repoDir, "fetch", "--prune")
+
+	if err := os.WriteFile(filepath.Join(wtPath, "local-only.txt"), []byte("local only\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	run(wtPath, "add", "local-only.txt")
+	run(wtPath, "commit", "-m", "local only")
+
+	mockWorkingDir(t, repoDir)
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/gone-unique"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected delete to block gone branch with unique local commit; output: %s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "unique local commits") {
+		t.Fatalf("expected unique local commits error, got: %v", err)
+	}
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		t.Fatalf("expected worktree to remain: %v", statErr)
+	}
+	for _, command := range runner.commands {
+		if len(command) > 0 && (command[0] == "kill-window" || command[0] == "kill-session") {
+			t.Fatalf("tmux target should not be killed when delete is blocked, got %v", runner.commands)
+		}
+	}
+}
+
+func TestDeleteCmd_RemoveFailureDoesNotKillTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/dirty-delete")
+	wtPath := filepath.Join(worktreeDir, "feat-dirty-delete")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/dirty-delete")
+	if err := os.WriteFile(filepath.Join(wtPath, "dirty.txt"), []byte("dirty\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+
+	runner := &recordingTmuxRunner{
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@9\tdev\trenamed\t" + repoDir + "\tfeat/dirty-delete\t" + wtPath + "\tcanonical",
+		},
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/dirty-delete", "--force"})
+
+	// Make the path no longer look like a worktree so Remove fails even with --force.
+	if err := os.Remove(filepath.Join(wtPath, ".git")); err != nil {
+		t.Fatal(err)
+	}
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected remove failure; output: %s", buf.String())
+	}
+	for _, command := range runner.commands {
+		if len(command) > 0 && (command[0] == "kill-window" || command[0] == "kill-session") {
+			t.Fatalf("tmux target should not be killed when worktree removal fails, got %v", runner.commands)
+		}
+	}
+}
+
 func TestDeleteCmd_RebaseMerged_AllowsDelete(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

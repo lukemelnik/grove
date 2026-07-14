@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -14,6 +15,21 @@ import (
 
 // ConfigFileName is the name of the Grove configuration file.
 const ConfigFileName = ".grove.yml"
+
+var envVarNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// IsValidEnvVarName reports whether name is safe to emit in process and dotenv
+// environments without changing the assignment structure.
+func IsValidEnvVarName(name string) bool {
+	return envVarNamePattern.MatchString(name)
+}
+
+func validateEnvValue(scope, value string) error {
+	if strings.ContainsAny(value, "\r\n\x00") {
+		return fmt.Errorf("%s: environment values must not contain newlines or NUL bytes", scope)
+	}
+	return nil
+}
 
 // BlockedPorts contains browser-restricted ports that should never be assigned.
 // See https://fetch.spec.whatwg.org/#bad-port (Chromium/Firefox blocked ports).
@@ -352,6 +368,9 @@ func Validate(cfg *Config) error {
 			if svc.Port.Env == "" {
 				return fmt.Errorf("service %q: port.var is required when port is defined — either add an env var name or remove the port block entirely", name)
 			}
+			if !IsValidEnvVarName(svc.Port.Env) {
+				return fmt.Errorf("service %q: port.var must be a valid environment variable name", name)
+			}
 			if other, exists := envSeen[svc.Port.Env]; exists {
 				return fmt.Errorf("services %q and %q both use env var %q", other, name, svc.Port.Env)
 			}
@@ -367,6 +386,14 @@ func Validate(cfg *Config) error {
 		}
 		if len(svc.Env) > 0 && svc.EnvFile == "" {
 			return fmt.Errorf("service %q: env requires env_file so Grove knows where to write service-scoped vars", name)
+		}
+		for key, value := range svc.Env {
+			if !IsValidEnvVarName(key) {
+				return fmt.Errorf("service %q: env contains an invalid environment variable name", name)
+			}
+			if err := validateEnvValue(fmt.Sprintf("service %q env", name), value); err != nil {
+				return err
+			}
 		}
 
 		// Validate service env_file path
@@ -404,6 +431,16 @@ func Validate(cfg *Config) error {
 				return fmt.Errorf("services %q and %q both write env var %q to %s", other, name, key, svc.EnvFile+".local")
 			}
 			keys[key] = name
+		}
+	}
+
+	// Validate top-level managed environment names and values.
+	for key, value := range cfg.Env {
+		if !IsValidEnvVarName(key) {
+			return fmt.Errorf("env contains an invalid environment variable name")
+		}
+		if err := validateEnvValue("env", value); err != nil {
+			return err
 		}
 	}
 

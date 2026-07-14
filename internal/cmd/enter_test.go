@@ -2,12 +2,132 @@ package cmd
 
 import (
 	"bytes"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/lukemelnik/grove/internal/worktree"
 )
+
+func TestEnterCmd_MainWorktreePreservesCanonicalEnvSource(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	sourcePath := filepath.Join(repoDir, "config", "secrets")
+	want := []byte("synthetic enter fixture\n")
+	if err := os.WriteFile(sourcePath, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	launched := false
+	origLauncher := shellLauncher
+	shellLauncher = func(opts shellLaunchOptions) error {
+		launched = true
+		gotDir, gotErr := filepath.EvalSymlinks(opts.Dir)
+		wantDir, wantErr := filepath.EvalSymlinks(repoDir)
+		if gotErr != nil || wantErr != nil || gotDir != wantDir {
+			t.Fatalf("shell dir = %q (%v), want main worktree %q (%v)", gotDir, gotErr, wantDir, wantErr)
+		}
+		return nil
+	}
+	t.Cleanup(func() { shellLauncher = origLauncher })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"enter", "main"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("enter main failed: %v\nOutput: %s", err, buf.String())
+	}
+	if !launched {
+		t.Fatal("expected shell launch after safe main-worktree sync")
+	}
+	got, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("reading synthetic source after enter: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("canonical source changed: got %q, want %q", got, want)
+	}
+	info, err := os.Lstat(sourcePath)
+	if err != nil {
+		t.Fatalf("lstat synthetic source: %v", err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("canonical source mode = %v, want regular file", info.Mode())
+	}
+}
+
+func TestEnterCmd_EnvCollisionDoesNotLaunchShell(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/enter-env-collision")
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/enter-env-collision")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/enter-env-collision")
+
+	for _, root := range []string{repoDir, wtPath} {
+		if err := os.MkdirAll(filepath.Join(root, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "secrets"), []byte("canonical fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(wtPath, "config", "secrets")
+	wantDestination := []byte("user fixture\n")
+	if err := os.WriteFile(destination, wantDestination, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	launched := false
+	origLauncher := shellLauncher
+	shellLauncher = func(shellLaunchOptions) error {
+		launched = true
+		return nil
+	}
+	t.Cleanup(func() { shellLauncher = origLauncher })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"enter", "feat/enter-env-collision"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected enter to reject a regular env destination")
+	}
+	if launched {
+		t.Fatal("shell launched despite unsafe env synchronization")
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || !bytes.Equal(got, wantDestination) {
+		t.Fatalf("destination changed: got %q err=%v", got, readErr)
+	}
+}
 
 func TestEnterCmd_LaunchesShellInWorktreeWithGroveEnv(t *testing.T) {
 	if testing.Short() {

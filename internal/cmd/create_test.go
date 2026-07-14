@@ -625,6 +625,81 @@ func tmuxCommandSeen(runner *recordingTmuxRunner, name string) bool {
 	return false
 }
 
+func TestCreateCmd_ReusedWorktreeEnvCollisionFailsBeforeHooksAndTmux(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/secrets
+hooks:
+  post_create:
+    - scripts/post-create.sh
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hookScript := "#!/bin/sh\ntouch \"$GROVE_WORKTREE/hook-should-not-run\"\n"
+	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "post-create.sh"), []byte(hookScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/post-create.sh")
+	gitRun(t, repoDir, "commit", "-m", "add test hook")
+	gitRun(t, repoDir, "branch", "feat/create-env-collision")
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/create-env-collision")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/create-env-collision")
+
+	for _, root := range []string{repoDir, wtPath} {
+		if err := os.MkdirAll(filepath.Join(root, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "secrets"), []byte("canonical fixture\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(wtPath, "config", "secrets")
+	wantDestination := []byte("user-managed fixture\n")
+	if err := os.WriteFile(destination, wantDestination, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/create-env-collision"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatal("expected create to reject a regular env destination")
+	}
+	got, readErr := os.ReadFile(destination)
+	if readErr != nil || !bytes.Equal(got, wantDestination) {
+		t.Fatalf("destination changed: got %q err=%v", got, readErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(wtPath, "hook-should-not-run")); !os.IsNotExist(statErr) {
+		t.Fatalf("post-create hook ran after unsafe env sync: stat err=%v", statErr)
+	}
+	if tmuxCommandSeen(runner, "new-session") || tmuxCommandSeen(runner, "new-window") {
+		t.Fatalf("tmux launched after unsafe env sync: %v", runner.commands)
+	}
+	if strings.Contains(buf.String(), "Reusing existing worktree") {
+		t.Fatalf("create printed success after unsafe env sync: %s", buf.String())
+	}
+}
+
 func TestCreateCmd_NoOpenProvisionOnlyRunsEnvHooksAndSkipsTmux(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -644,12 +719,6 @@ hooks:
 `
 	repoDir := setupCreateTestRepo(t, groveYML)
 
-	if err := os.MkdirAll(filepath.Join(repoDir, "apps", "api"), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repoDir, "apps", "api", "config"), []byte("BASE=1\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -657,10 +726,18 @@ hooks:
 	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "post-create.sh"), []byte(hookScript), 0755); err != nil {
 		t.Fatal(err)
 	}
-
-	gitRun(t, repoDir, "add", ".")
-	gitRun(t, repoDir, "commit", "-m", "add config and hook")
+	gitRun(t, repoDir, "add", "scripts/post-create.sh")
+	gitRun(t, repoDir, "commit", "-m", "add hook")
 	gitRun(t, repoDir, "branch", "feat/no-open")
+
+	// Canonical env sources are intentionally untracked: linked worktrees must
+	// start without a regular destination that could contain user data.
+	if err := os.MkdirAll(filepath.Join(repoDir, "apps", "api"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "apps", "api", "config"), []byte("BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 
 	mockWorkingDir(t, repoDir)
 	mockTerminal(t)
@@ -730,8 +807,8 @@ services:
 		t.Fatal(err)
 	}
 
-	gitRun(t, repoDir, "add", ".")
-	gitRun(t, repoDir, "commit", "-m", "add env config")
+	// Keep the synthetic canonical sources untracked so linked worktrees do not
+	// contain regular destination files before Grove synchronizes them.
 	gitRun(t, repoDir, "branch", "feat/parent")
 	gitRun(t, repoDir, "branch", "feat/child")
 

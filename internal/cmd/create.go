@@ -124,7 +124,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
 	}
 
-	if err := syncWorktreeEnv(cmd, ctx.Config, ctx.ProjectRoot, result.Path, managed); err != nil {
+	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, result.Path, managed); err != nil {
 		return outputError(cmd, err)
 	}
 

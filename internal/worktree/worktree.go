@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -366,7 +367,10 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 			if !registered && !pathExists {
 				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
 			}
-			if pathExists && !registered && !looksLikeGitWorktree(wtPath) {
+			if pathExists && !looksLikeGitWorktree(wtPath) {
+				if registered {
+					return nil, fmt.Errorf("refusing to remove registered path %s because it no longer looks like a git worktree", wtPath)
+				}
 				return nil, fmt.Errorf("refusing to remove unregistered path %s", wtPath)
 			}
 
@@ -534,10 +538,9 @@ const (
 // that were never pushed (UnpushedNoRemote) and branches whose remote was
 // deleted after a merge (UnpushedGone) by checking git branch config.
 func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
-	// Check if there's a remote tracking branch
-	_, err := m.git.Run("rev-parse", "--verify", "refs/remotes/origin/"+branch)
+	upstream, err := m.git.Run("rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
 	if err != nil {
-		// No remote tracking ref. Check if the branch previously had upstream
+		// No resolvable upstream. Check if the branch previously had upstream
 		// config — this means it was pushed/tracked before but the remote branch
 		// was deleted (e.g. GitHub auto-delete after PR merge).
 		remote, configErr := m.git.Run("config", "--get", "branch."+branch+".remote")
@@ -547,14 +550,21 @@ func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
 		return UnpushedNoRemote, 0, nil
 	}
 
-	// Count commits ahead of remote
-	out, err := m.git.Run("rev-list", "--count", "origin/"+branch+".."+branch)
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return UnpushedNoRemote, 0, nil
+	}
+
+	// Count commits ahead of the branch's configured upstream.
+	out, err := m.git.Run("rev-list", "--count", upstream+".."+branch)
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting unpushed commits: %w", err)
 	}
 
-	count := 0
-	fmt.Sscanf(strings.TrimSpace(out), "%d", &count)
+	count, err := strconv.Atoi(strings.TrimSpace(out))
+	if err != nil || count < 0 {
+		return 0, 0, fmt.Errorf("parsing unpushed commit count")
+	}
 	if count > 0 {
 		return UnpushedCommits, count, nil
 	}

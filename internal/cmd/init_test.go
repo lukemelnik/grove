@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -282,6 +283,71 @@ func TestInitCmd_CustomWorktreeDirOverride(t *testing.T) {
 	wantResolvedWorktreeBaseDir := filepath.Clean(filepath.Join(tmpDir, "..", "custom-worktrees", "project-x"))
 	if !strings.Contains(buf.String(), "Worktree base dir: "+wantResolvedWorktreeBaseDir) {
 		t.Errorf("output should mention resolved custom worktree dir, got:\n%s", buf.String())
+	}
+}
+
+func TestWriteConfig_RenameFailurePreservesExistingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, config.ConfigFileName)
+	want := []byte("user config remains\n")
+	if err := os.WriteFile(path, want, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	oldRename := renameConfigFile
+	renameConfigFile = func(_, _ string) error { return errors.New("synthetic rename failure") }
+	t.Cleanup(func() { renameConfigFile = oldRename })
+
+	var output bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&output)
+	err := writeConfig(cmd, path, &config.Config{})
+	if err == nil {
+		t.Fatal("expected atomic rename failure")
+	}
+	got, readErr := os.ReadFile(path)
+	if readErr != nil || !bytes.Equal(got, want) {
+		t.Fatalf("existing config changed: got=%q err=%v", got, readErr)
+	}
+	entries, readDirErr := os.ReadDir(dir)
+	if readDirErr != nil {
+		t.Fatal(readDirErr)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), ".grove-write-") {
+			t.Fatalf("temporary config artifact left behind: %s", entry.Name())
+		}
+	}
+}
+
+func TestWriteConfig_DoesNotFollowExistingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	external := filepath.Join(t.TempDir(), "external-config")
+	wantExternal := []byte("external user config\n")
+	if err := os.WriteFile(external, wantExternal, 0600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, config.ConfigFileName)
+	if err := os.Symlink(external, path); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	cmd := NewRootCmd()
+	cmd.SetOut(&output)
+	if err := writeConfig(cmd, path, &config.Config{}); err != nil {
+		t.Fatalf("writeConfig failed: %v", err)
+	}
+	externalAfter, err := os.ReadFile(external)
+	if err != nil || !bytes.Equal(externalAfter, wantExternal) {
+		t.Fatalf("external symlink target changed: got=%q err=%v", externalAfter, err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf("config path mode = %v, want replacement regular file", info.Mode())
 	}
 }
 

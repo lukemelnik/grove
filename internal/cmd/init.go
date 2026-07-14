@@ -17,7 +17,10 @@ import (
 
 // stdinReader is the reader used for interactive input.
 // It is a var so tests can override it with mock input.
-var stdinReader io.Reader = os.Stdin
+var (
+	stdinReader      io.Reader = os.Stdin
+	renameConfigFile           = os.Rename
+)
 
 func newInitCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -364,7 +367,7 @@ func writeConfig(cmd *cobra.Command, configPath string, cfg *config.Config) erro
 	header := "# Grove configuration — run 'grove schema' for full reference\n\n"
 	content := header + string(data)
 
-	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+	if err := atomicWriteConfig(configPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("writing %s: %w", config.ConfigFileName, err)
 	}
 
@@ -383,6 +386,44 @@ func writeConfig(cmd *cobra.Command, configPath string, cfg *config.Config) erro
 	} else {
 		fmt.Fprintf(cmd.OutOrStdout(), "Worktree base dir: %s\n", resolvedWorktreeDir)
 	}
+	return nil
+}
+
+func atomicWriteConfig(path string, content []byte, mode os.FileMode) error {
+	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".grove-write-*")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	tmpInfo, statErr := f.Stat()
+	renamed := false
+	defer func() {
+		_ = f.Close()
+		if !renamed && statErr == nil {
+			if info, err := os.Lstat(tmp); err == nil && os.SameFile(tmpInfo, info) {
+				_ = os.Remove(tmp)
+			}
+		}
+	}()
+	if statErr != nil {
+		return statErr
+	}
+	if _, err := f.Write(content); err != nil {
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	if err := renameConfigFile(tmp, path); err != nil {
+		return err
+	}
+	renamed = true
 	return nil
 }
 

@@ -55,7 +55,7 @@ func enterBranch(cmd *cobra.Command, branch string) error {
 		return outputError(cmd, err)
 	}
 
-	if err := syncWorktreeEnv(cmd, ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
+	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
 		return outputError(cmd, err)
 	}
 
