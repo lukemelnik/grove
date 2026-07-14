@@ -508,6 +508,47 @@ tmux:
 	}
 }
 
+func TestCreateCmd_StreamHookKeepsJSONStdoutClean(t *testing.T) {
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  output: stream
+  post_create:
+    - scripts/stream.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	scriptsDir := filepath.Join(repoDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "stream.sh"), []byte("#!/bin/sh\nprintf hook-stream-output\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/stream.sh")
+	gitRun(t, repoDir, "commit", "-m", "add streaming hook")
+	gitRun(t, repoDir, "branch", "feat/stream-json")
+
+	mockWorkingDir(t, repoDir)
+	rootCmd := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"create", "feat/stream-json", "--json", "--no-tmux"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("create failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	var out createOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nRaw: %s", err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "hook-stream-output") {
+		t.Fatalf("stdout contained hook text: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "hook-stream-output") {
+		t.Fatalf("stderr did not receive streamed hook output: %s", stderr.String())
+	}
+}
+
 func TestCreateCmd_PostCreateHooks(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

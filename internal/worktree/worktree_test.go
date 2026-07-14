@@ -946,6 +946,48 @@ func TestIntegration_CreateWorktree_Reuse(t *testing.T) {
 	}
 }
 
+func TestManager_RemoveIfBranchTip_PreRemovalMismatch(t *testing.T) {
+	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/safe")
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n\nworktree "+path+"\nHEAD old\nbranch refs/heads/feat/safe\n", nil)
+	git.On("rev-parse --verify refs/heads/feat/safe", "new", nil)
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	result, err := mgr.RemoveIfBranchTip("feat/safe", true, false, "old")
+	if err == nil {
+		t.Fatal("expected checked removal to fail on changed tip")
+	}
+	if result != nil {
+		t.Fatalf("expected no mutation result, got %+v", result)
+	}
+	if git.wasCalled("worktree remove "+path) || git.wasCalled("branch -D -- feat/safe") {
+		t.Fatalf("checked removal should not mutate after pre-removal mismatch; calls=%v", git.calls)
+	}
+}
+
+func TestManager_RemoveIfBranchTip_PostRemovalMismatchPreservesBranch(t *testing.T) {
+	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/safe")
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n\nworktree "+path+"\nHEAD old\nbranch refs/heads/feat/safe\n", nil)
+	git.OnSequence("rev-parse --verify refs/heads/feat/safe", mockResponse{output: "old", err: nil}, mockResponse{output: "new", err: nil})
+	git.On("worktree remove "+path, "", nil)
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	result, err := mgr.RemoveIfBranchTip("feat/safe", true, false, "old")
+	if err == nil {
+		t.Fatal("expected checked removal to report partial failure")
+	}
+	if result == nil || !result.WorktreeRemoved || result.BranchDeleted {
+		t.Fatalf("expected worktree removed and branch preserved, got %+v", result)
+	}
+	if !strings.Contains(result.BranchSkipReason, "branch changed") {
+		t.Fatalf("expected actionable branch preservation reason, got %q", result.BranchSkipReason)
+	}
+	if git.wasCalled("branch -D -- feat/safe") {
+		t.Fatalf("branch must not be deleted after post-removal mismatch; calls=%v", git.calls)
+	}
+}
+
 func TestIntegration_RemoveWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

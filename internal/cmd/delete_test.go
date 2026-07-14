@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -68,6 +69,55 @@ services:
 	output := buf.String()
 	if !strings.Contains(output, `"worktree":`) || !strings.Contains(output, `"deleted_branch": true`) {
 		t.Errorf("expected JSON deletion result, got:\n%s", output)
+	}
+}
+
+func TestDeleteCmd_StreamHookKeepsJSONStdoutClean(t *testing.T) {
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  output: stream
+  pre_delete:
+    - scripts/stream.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	scriptsDir := filepath.Join(repoDir, "scripts")
+	if err := os.MkdirAll(scriptsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(scriptsDir, "stream.sh"), []byte("#!/bin/sh\nprintf hook-stream-output\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/stream.sh")
+	gitRun(t, repoDir, "commit", "-m", "add streaming hook")
+	gitRun(t, repoDir, "branch", "feat/delete-stream-json")
+	gitRun(t, repoDir, "worktree", "add", filepath.Join(worktreeDir, "feat-delete-stream-json"), "feat/delete-stream-json")
+
+	mockWorkingDir(t, repoDir)
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return &noopTmuxRunner{} }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"delete", "feat/delete-stream-json", "--force", "--json"})
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("delete failed: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
+	}
+	var out deleteOutput
+	if err := json.Unmarshal(stdout.Bytes(), &out); err != nil {
+		t.Fatalf("stdout is not valid JSON: %v\nRaw: %s", err, stdout.String())
+	}
+	if strings.Contains(stdout.String(), "hook-stream-output") {
+		t.Fatalf("stdout contained hook text: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "hook-stream-output") {
+		t.Fatalf("stderr did not receive streamed hook output: %s", stderr.String())
 	}
 }
 
@@ -199,6 +249,66 @@ fi
 	}
 	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 		t.Errorf("expected worktree to be removed, stat err: %v", err)
+	}
+}
+
+func TestDeleteCmd_PreDeleteHookCommitAbortsRemoval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+hooks:
+  pre_delete:
+    - scripts/commit-pre-delete.sh
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	hookScript := `#!/bin/bash
+set -e
+cd "$GROVE_WORKTREE"
+printf 'created by hook\n' > hook-created.txt
+git add hook-created.txt
+git commit -m 'hook creates work'
+`
+	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "commit-pre-delete.sh"), []byte(hookScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "scripts/commit-pre-delete.sh")
+	gitRun(t, repoDir, "commit", "-m", "add committing pre-delete hook")
+	gitRun(t, repoDir, "branch", "feat/pre-delete-commit")
+	gitRun(t, repoDir, "branch", "--set-upstream-to=main", "feat/pre-delete-commit")
+	wtPath := filepath.Join(worktreeDir, "feat-pre-delete-commit")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/pre-delete-commit")
+
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"delete", "feat/pre-delete-commit"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected delete to abort after hook changed branch\nOutput: %s", buf.String())
+	}
+	if !strings.Contains(buf.String()+err.Error(), "changed before worktree removal") {
+		t.Fatalf("expected branch-changed abort, got err=%v output=%s", err, buf.String())
+	}
+	if _, statErr := os.Stat(wtPath); statErr != nil {
+		t.Fatalf("worktree should remain after hook-created commit: %v", statErr)
+	}
+	if _, verifyErr := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/pre-delete-commit").CombinedOutput(); verifyErr != nil {
+		t.Fatal("branch should remain after hook-created commit")
 	}
 }
 

@@ -786,7 +786,26 @@ func validSource(src, rel string) (os.FileInfo, error) {
 	if !info.Mode().IsRegular() {
 		return nil, fmt.Errorf("canonical source %s is not a regular file", rel)
 	}
-	return info, nil
+
+	file, err := os.Open(src)
+	if err != nil {
+		return nil, fmt.Errorf("opening canonical source %s read-only: %w", rel, err)
+	}
+	openedInfo, statErr := file.Stat()
+	closeErr := file.Close()
+	if statErr != nil {
+		return nil, errors.Join(fmt.Errorf("validating opened canonical source %s: %w", rel, statErr), closeErr)
+	}
+	if !openedInfo.Mode().IsRegular() {
+		return nil, errors.Join(fmt.Errorf("opened canonical source %s is not a regular file", rel), closeErr)
+	}
+	if !os.SameFile(info, openedInfo) {
+		return nil, errors.Join(fmt.Errorf("canonical source %s changed while validating", rel), closeErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("closing canonical source %s after validation: %w", rel, closeErr)
+	}
+	return openedInfo, nil
 }
 
 func validateSourceAncestors(dir string) error {

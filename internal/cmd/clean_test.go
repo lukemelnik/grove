@@ -54,11 +54,19 @@ type cleanMockGitRunner struct {
 		output string
 		err    error
 	}
+	sequences map[string][]struct {
+		output string
+		err    error
+	}
 }
 
 func newCleanMockGitRunner() *cleanMockGitRunner {
 	return &cleanMockGitRunner{
 		responses: make(map[string]struct {
+			output string
+			err    error
+		}),
+		sequences: make(map[string][]struct {
 			output string
 			err    error
 		}),
@@ -72,8 +80,23 @@ func (m *cleanMockGitRunner) On(args string, output string, err error) {
 	}{output: output, err: err}
 }
 
+func (m *cleanMockGitRunner) OnSequence(args string, responses ...struct {
+	output string
+	err    error
+}) {
+	m.sequences[args] = append([]struct {
+		output string
+		err    error
+	}{}, responses...)
+}
+
 func (m *cleanMockGitRunner) Run(args ...string) (string, error) {
 	key := strings.Join(args, " ")
+	if sequence := m.sequences[key]; len(sequence) > 0 {
+		resp := sequence[0]
+		m.sequences[key] = sequence[1:]
+		return resp.output, resp.err
+	}
 	if resp, ok := m.responses[key]; ok {
 		return resp.output, resp.err
 	}
@@ -219,6 +242,81 @@ func TestCleanCmd_PreservesDirtyWorktreeWithoutForce(t *testing.T) {
 	}
 	if _, err := os.Stat(wtPath); err != nil {
 		t.Errorf("worktree path should still exist: %v", err)
+	}
+}
+
+func TestCleanCmd_ForcePreservesDirtyStaleWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitRun(t, repoDir, "branch", "feat/dirty-force")
+	wtPath := filepath.Join(worktreeDir, "feat-dirty-force")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/dirty-force")
+	if err := os.WriteFile(filepath.Join(wtPath, "dirty.txt"), []byte("keep me\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean", "--force"})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("expected clean --force to fail rather than discard dirty worktree\nOutput: %s", buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "dirty.txt")); err != nil {
+		t.Fatalf("dirty worktree should be preserved: %v", err)
+	}
+	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/dirty-force").CombinedOutput(); err != nil {
+		t.Fatal("branch should still exist after clean --force dirty refusal")
+	}
+}
+
+func TestCleanCmd_DiscardChangesRemovesDirtyStaleWorktree(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	gitRun(t, repoDir, "branch", "feat/dirty-discard")
+	wtPath := filepath.Join(worktreeDir, "feat-dirty-discard")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/dirty-discard")
+	if err := os.WriteFile(filepath.Join(wtPath, "dirty.txt"), []byte("discard me\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean", "--discard-changes"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("clean --discard-changes failed: %v\nOutput: %s", err, buf.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("dirty worktree should be removed with --discard-changes, stat err=%v", err)
+	}
+	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/dirty-discard").CombinedOutput(); err == nil {
+		t.Fatal("branch should be deleted with --discard-changes")
 	}
 }
 
@@ -562,6 +660,52 @@ func TestFindStaleWorktrees_IncludesGoneBranchesWithUniqueCommitsWhenAllEnabled(
 	}
 	if stale[0].Reason != "gone-unique" {
 		t.Fatalf("expected reason gone-unique, got %+v", stale[0])
+	}
+}
+
+func TestRevalidateStaleWorktree_RefusesChangedTip(t *testing.T) {
+	git := newCleanMockGitRunner()
+	git.OnSequence("rev-parse --verify refs/heads/feat/stale",
+		struct {
+			output string
+			err    error
+		}{"old", nil},
+		struct {
+			output string
+			err    error
+		}{"new", nil},
+	)
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feat-stale\nHEAD old\nbranch refs/heads/feat/stale\n", nil)
+	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
+	git.On("branch -vv", "* main 111aaaa [origin/main] latest\n", nil)
+	git.On("branch --merged main", "  feat/stale\n", nil)
+	git.On("rev-list --count main..feat/stale", "0", nil)
+
+	mgr := worktree.NewManager(git, "/project", "/worktrees")
+	_, err := revalidateStaleWorktree(mgr, staleWorktree{Branch: "feat/stale", Reason: "unchanged", Worktree: "/worktrees/feat-stale"}, false)
+	if err == nil {
+		t.Fatal("expected revalidation to fail when branch tip changes")
+	}
+	if !strings.Contains(err.Error(), "changed during revalidation") {
+		t.Fatalf("expected changed-tip error, got %v", err)
+	}
+}
+
+func TestRevalidateStaleWorktree_RefusesNoLongerStale(t *testing.T) {
+	git := newCleanMockGitRunner()
+	git.On("rev-parse --verify refs/heads/feat/stale", "old", nil)
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n\nworktree /worktrees/feat-stale\nHEAD old\nbranch refs/heads/feat/stale\n", nil)
+	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
+	git.On("branch -vv", "* main 111aaaa [origin/main] latest\n", nil)
+	git.On("branch --merged main", "* main\n", nil)
+
+	mgr := worktree.NewManager(git, "/project", "/worktrees")
+	_, err := revalidateStaleWorktree(mgr, staleWorktree{Branch: "feat/stale", Reason: "unchanged", Worktree: "/worktrees/feat-stale"}, false)
+	if err == nil {
+		t.Fatal("expected revalidation to fail when candidate stops being stale")
+	}
+	if !strings.Contains(err.Error(), "no longer stale") {
+		t.Fatalf("expected no-longer-stale error, got %v", err)
 	}
 }
 

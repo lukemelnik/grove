@@ -385,6 +385,19 @@ type RemoveResult struct {
 	BranchDeleteError error
 }
 
+// BranchTip returns the current object ID for a local branch ref.
+func (m *Manager) BranchTip(branch string) (string, error) {
+	out, err := m.git.Run("rev-parse", "--verify", "refs/heads/"+branch)
+	if err != nil {
+		return "", fmt.Errorf("reading branch %q tip: %w", branch, err)
+	}
+	tip := strings.TrimSpace(out)
+	if tip == "" {
+		return "", fmt.Errorf("reading branch %q tip: empty output", branch)
+	}
+	return tip, nil
+}
+
 // Remove removes a worktree and optionally deletes the branch.
 // When force is false, git will refuse to remove worktrees with uncommitted changes.
 // When force is true, the worktree is removed even if it has uncommitted changes.
@@ -392,8 +405,31 @@ type RemoveResult struct {
 // If git doesn't recognize the path as a worktree (e.g. leftover directory after
 // metadata was pruned), it prunes stale metadata and removes the directory directly.
 func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult, error) {
+	return m.remove(branch, deleteBranch, force, "")
+}
+
+// RemoveIfBranchTip removes a worktree only while the branch remains at expectedTip.
+// It verifies the tip before worktree removal and again before branch deletion.
+func (m *Manager) RemoveIfBranchTip(branch string, deleteBranch, force bool, expectedTip string) (*RemoveResult, error) {
+	if strings.TrimSpace(expectedTip) == "" {
+		return nil, fmt.Errorf("expected branch tip is required for checked removal")
+	}
+	return m.remove(branch, deleteBranch, force, strings.TrimSpace(expectedTip))
+}
+
+func (m *Manager) remove(branch string, deleteBranch, force bool, expectedTip string) (*RemoveResult, error) {
 	wtPath, registered := m.resolveWorktreePath(branch)
 	result := &RemoveResult{}
+
+	if expectedTip != "" {
+		currentTip, err := m.BranchTip(branch)
+		if err != nil {
+			return nil, err
+		}
+		if currentTip != expectedTip {
+			return nil, fmt.Errorf("branch %q changed from %s to %s before worktree removal; aborting", branch, expectedTip, currentTip)
+		}
+	}
 
 	args := []string{"worktree", "remove"}
 	if force {
@@ -436,6 +472,19 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 	result.WorktreeRemoved = true
 
 	if deleteBranch {
+		if expectedTip != "" {
+			currentTip, err := m.BranchTip(branch)
+			if err != nil {
+				result.BranchSkipReason = "could not verify branch tip before deletion"
+				result.BranchDeleteError = err
+				return result, err
+			}
+			if currentTip != expectedTip {
+				result.BranchSkipReason = "branch changed after worktree removal; branch preserved"
+				result.BranchDeleteError = fmt.Errorf("branch %q changed from %s to %s after worktree removal; branch preserved", branch, expectedTip, currentTip)
+				return result, result.BranchDeleteError
+			}
+		}
 		_, err := m.git.Run("branch", "-D", "--", branch)
 		if err != nil {
 			errMsg := err.Error()

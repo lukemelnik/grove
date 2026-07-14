@@ -57,7 +57,8 @@ Agent workflow:
   Use grove list --json to discover worktrees and use the returned worktree path as cwd
   Use grove open <branch> only when asked to open or restore the full tmux UI
   Avoid grove enter and interactive grove list unless explicitly asked
-  Do not pass --force to delete/clean without explicit user approval`,
+  Do not pass --force to delete/clean without explicit user approval
+  Never pass clean --discard-changes without explicit approval to discard dirty work`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

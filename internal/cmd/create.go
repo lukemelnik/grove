@@ -137,15 +137,20 @@ func runCreate(cmd *cobra.Command, args []string) error {
 
 	postCreateHooksRan := ctx.Config.Hooks != nil && len(ctx.Config.Hooks.PostCreate) > 0
 	if postCreateHooksRan {
+		outputMode := configuredHookOutputMode(ctx.Config.Hooks)
+		hookStdout := cmd.OutOrStdout()
+		if jsonOutput && outputMode == hooks.OutputStream {
+			hookStdout = cmd.ErrOrStderr()
+		}
 		hookOpts := hooks.RunOpts{
 			Branch:         branch,
 			WorktreePath:   result.Path,
 			ProjectRoot:    ctx.ProjectRoot,
 			Ports:          portAssignment.Ports,
-			Stdout:         cmd.OutOrStdout(),
+			Stdout:         hookStdout,
 			Stderr:         cmd.ErrOrStderr(),
 			EnvPassthrough: ctx.Config.Hooks.EnvPassthrough,
-			OutputMode:     configuredHookOutputMode(ctx.Config.Hooks),
+			OutputMode:     outputMode,
 			Context:        cmd.Context(),
 			Timeout:        ctx.Config.Hooks.Timeout,
 		}
@@ -184,16 +189,7 @@ func runCreate(cmd *cobra.Command, args []string) error {
 	}
 	if err := tmuxMgr.Create(tmuxOpts); err != nil {
 		setupErr := fmt.Errorf("setting up tmux workspace: %w", err)
-		if postCreateHooksRan {
-			return outputError(cmd, newCodedError("create_tmux_failed", fmt.Errorf("%w; worktree and branch retained because post-create hooks may have produced files", setupErr)))
-		}
-		lock, lockErr := acquireWorkflowLock(cmd.Context(), ctx)
-		if lockErr != nil {
-			return outputError(cmd, newCodedError("create_tmux_failed", combineCleanupErrors(setupErr, fmt.Errorf("resources retained because rollback lock could not be acquired: %w", lockErr))))
-		}
-		cleanupErr := rollbackCreatedResourcesLocked(ctx, result)
-		releaseErr := lock.Release()
-		return outputError(cmd, newCodedError("create_tmux_failed", combineCleanupErrors(setupErr, cleanupErr, releaseErr)))
+		return outputError(cmd, newCodedError("create_tmux_failed", fmt.Errorf("%w; worktree and branch retained because tmux setup may have produced worktree side effects", setupErr)))
 	}
 
 	if jsonOutput {

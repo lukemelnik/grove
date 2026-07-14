@@ -220,14 +220,13 @@ func TestCreateEnvSyncFailureRollsBackNewWorktreeButKeepsExistingBranch(t *testi
 	}
 }
 
-func TestCreateTmuxFailureRollsBackOnlyBeforeHooksProduceFiles(t *testing.T) {
+func TestCreateTmuxFailureRetainsWorktreeBecauseSetupMayHaveSideEffects(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		withHook   bool
-		wantRetain bool
+		name     string
+		withHook bool
 	}{
-		{name: "no hooks rolls back", wantRetain: false},
-		{name: "post-create hook output is retained", withHook: true, wantRetain: true},
+		{name: "no hooks retains worktree"},
+		{name: "post-create hook output is retained", withHook: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			worktreeDir := t.TempDir()
@@ -264,19 +263,16 @@ func TestCreateTmuxFailureRollsBackOnlyBeforeHooksProduceFiles(t *testing.T) {
 			if err := root.Execute(); err == nil {
 				t.Fatalf("expected tmux failure; stdout=%s stderr=%s", stdout.String(), stderr.String())
 			}
-			_, statErr := os.Stat(worktreePath)
-			if tc.wantRetain {
-				if statErr != nil {
-					t.Fatalf("hook worktree was removed: %v", statErr)
-				}
+			if _, statErr := os.Stat(worktreePath); statErr != nil {
+				t.Fatalf("worktree was removed after tmux failure: %v", statErr)
+			}
+			if tc.withHook {
 				if got, err := os.ReadFile(filepath.Join(worktreePath, "hook-output")); err != nil || string(got) != "generated" {
 					t.Fatalf("hook output not retained: %q, %v", got, err)
 				}
-				if !strings.Contains(stderr.String(), "retained because post-create hooks") {
-					t.Fatalf("retention not reported: %s", stderr.String())
-				}
-			} else if !os.IsNotExist(statErr) {
-				t.Fatalf("new worktree was not rolled back: %v", statErr)
+			}
+			if !strings.Contains(stderr.String(), "retained because tmux setup may have produced worktree side effects") {
+				t.Fatalf("retention not reported: %s", stderr.String())
 			}
 		})
 	}

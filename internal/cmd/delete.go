@@ -138,7 +138,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 3: Run remote and unpushed safety checks only for a real deletion.
+	expectedBranchTip := ""
 	if !force {
+		initialTip, tipErr := wtMgr.BranchTip(branch)
+		if tipErr != nil {
+			return outputError(cmd, newCodedError("delete_branch_tip_check_failed", tipErr))
+		}
+		expectedBranchTip = initialTip
 		if ghAvailable() {
 			hasOpenPR, prNum, checkErr := checkOpenPRs(branch)
 			if checkErr != nil {
@@ -194,6 +200,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 				return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)))
 			}
 		}
+		afterChecksTip, tipErr := wtMgr.BranchTip(branch)
+		if tipErr != nil {
+			return outputError(cmd, newCodedError("delete_branch_tip_check_failed", tipErr))
+		}
+		if afterChecksTip != expectedBranchTip {
+			return outputError(cmd, newCodedError("delete_branch_changed", fmt.Errorf("branch %q changed during delete safety checks; aborting to preserve work", branch)))
+		}
 	}
 
 	// Step 4: Serialize persistent assignment, hooks, and destructive cleanup.
@@ -214,21 +227,38 @@ func runDelete(cmd *cobra.Command, args []string) error {
 			_ = lock.Release()
 			return outputError(cmd, newCodedError("delete_port_assignment_failed", assignErr))
 		}
+		outputMode := configuredHookOutputMode(cfg.Hooks)
+		hookStdout := cmd.OutOrStdout()
+		if jsonOutput && outputMode == hooks.OutputStream {
+			hookStdout = cmd.ErrOrStderr()
+		}
 		hookOpts := hooks.RunOpts{
 			Branch:         branch,
 			WorktreePath:   wtPath,
 			ProjectRoot:    projectRoot,
 			Ports:          assignment.Ports,
-			Stdout:         cmd.OutOrStdout(),
+			Stdout:         hookStdout,
 			Stderr:         cmd.ErrOrStderr(),
 			EnvPassthrough: cfg.Hooks.EnvPassthrough,
-			OutputMode:     configuredHookOutputMode(cfg.Hooks),
+			OutputMode:     outputMode,
 			Context:        cmd.Context(),
 			Timeout:        cfg.Hooks.Timeout,
 		}
 		if hookErr := hooks.RunPreDelete(cfg.Hooks.PreDelete, hookOpts); hookErr != nil {
 			releaseErr := lock.Release()
 			return outputError(cmd, newCodedError("delete_hook_failed", combineCleanupErrors(fmt.Errorf("pre-delete hook failed: %w", hookErr), releaseErr)))
+		}
+	}
+
+	if !force {
+		beforeRemovalTip, tipErr := wtMgr.BranchTip(branch)
+		if tipErr != nil {
+			releaseErr := lock.Release()
+			return outputError(cmd, newCodedError("delete_branch_tip_check_failed", combineCleanupErrors(tipErr, releaseErr)))
+		}
+		if beforeRemovalTip != expectedBranchTip {
+			releaseErr := lock.Release()
+			return outputError(cmd, newCodedError("delete_branch_changed", combineCleanupErrors(fmt.Errorf("branch %q changed before worktree removal; aborting to preserve work", branch), releaseErr)))
 		}
 	}
 
@@ -242,7 +272,13 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 5: Remove git worktree and optionally delete branch.
-	result, removeErr := wtMgr.Remove(branch, deleteBranch, force)
+	var result *worktree.RemoveResult
+	var removeErr error
+	if !force {
+		result, removeErr = wtMgr.RemoveIfBranchTip(branch, deleteBranch, false, expectedBranchTip)
+	} else {
+		result, removeErr = wtMgr.Remove(branch, deleteBranch, true)
+	}
 	if removeErr != nil && (result == nil || !result.WorktreeRemoved) {
 		releaseErr := lock.Release()
 		return outputError(cmd, newCodedError("delete_worktree_failed", combineCleanupErrors(fmt.Errorf("removing worktree: %w", removeErr), releaseErr)))

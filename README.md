@@ -300,10 +300,11 @@ Batch cleanup of stale worktrees. Each branch is labeled with a reason:
 grove clean              # Interactive — shows safe stale worktrees, asks for confirmation
 grove clean --dry-run    # Just show what would be cleaned
 grove clean --all        # Also include deleted-remote branches that still have unique commits
-grove clean --force      # Skip confirmation
+grove clean --force      # Skip confirmation, but still preserve dirty worktrees
+grove clean --discard-changes  # Skip confirmation and explicitly discard dirty stale worktrees
 ```
 
-For each stale worktree, grove kills the managed tmux target, removes the worktree, deletes the local branch, and prunes git worktree metadata. `clean` and `delete` return nonzero on partial failures instead of reporting success.
+For each stale worktree, grove kills the managed tmux target, removes the worktree, deletes the local branch, and prunes git worktree metadata. `clean --force` only bypasses confirmation; it does not force-remove dirty worktrees. Use `clean --discard-changes` only when you explicitly want Git to discard uncommitted or untracked work in stale worktrees. `clean` and `delete` return nonzero on partial failures instead of reporting success.
 
 ### `grove status`
 
@@ -610,8 +611,9 @@ Agent rules:
 - Avoid `grove enter` unless explicitly asked because it starts an interactive shell.
 - Avoid interactive `grove list`/fzf; use `--json`.
 - Do not pass `--force` to `delete` or `clean` without explicit user approval.
+- Never pass `grove clean --discard-changes` unless the user explicitly approves discarding dirty worktrees.
 
-**Safe mutations** — `grove clean --dry-run` and `grove delete --dry-run` preview before acting. Before hooks run, ownership-aware create rollback removes only resources Grove created; after a post-create hook runs, Grove retains the worktree on later tmux failure because the hook may have produced files. `--force` skips prompts only after explicit approval. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
+**Safe mutations** — `grove clean --dry-run` and `grove delete --dry-run` preview before acting. Create rollback removes only resources created by the invocation when setup fails before hooks or tmux can produce side effects; any tmux setup failure retains the worktree and branch. Delete and clean revalidate branch tips immediately before removal. `clean --force` skips prompts only after explicit approval but still preserves dirty worktrees; `clean --discard-changes` is the explicit dirty-worktree removal flag. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
 
 ## Example Configs
 

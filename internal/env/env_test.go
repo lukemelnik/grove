@@ -997,6 +997,35 @@ func TestSymlinkEnvFiles_PreflightFailuresLeaveDestinationsUntouched(t *testing.
 	}
 }
 
+func TestSymlinkEnvFiles_UnreadableSourceFailsPreflight(t *testing.T) {
+	mainRepo := t.TempDir()
+	worktree := t.TempDir()
+	src := filepath.Join(mainRepo, "config", "secrets")
+	mustMkdirAll(t, filepath.Dir(src))
+	if err := os.WriteFile(src, []byte("TOKEN=main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(src, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(src, 0o600) })
+	if f, err := os.Open(src); err == nil {
+		_ = f.Close()
+		t.Skip("runtime bypasses file permissions")
+	}
+
+	err := SymlinkEnvFiles([]string{"config/secrets"}, mainRepo, worktree)
+	if err == nil {
+		t.Fatal("expected unreadable source error")
+	}
+	if !strings.Contains(err.Error(), "opening canonical source config/secrets read-only") {
+		t.Fatalf("expected read validation error, got: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(worktree, "config", "secrets")); !os.IsNotExist(err) {
+		t.Fatalf("destination was created despite unreadable source: %v", err)
+	}
+}
+
 func TestSymlinkEnvFiles_InvalidSourceAndDestinationParentSymlink(t *testing.T) {
 	mainRepo := t.TempDir()
 	worktree := t.TempDir()

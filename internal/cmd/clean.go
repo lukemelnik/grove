@@ -60,6 +60,7 @@ the git worktree is removed, and the local branch is deleted.`,
 
 	cmd.Flags().Bool("dry-run", false, "show what would be cleaned without doing it")
 	cmd.Flags().Bool("force", false, "skip confirmation prompt")
+	cmd.Flags().Bool("discard-changes", false, "skip confirmation and remove dirty stale worktrees")
 	cmd.Flags().Bool("all", false, "also include gone branches that still have unique commits")
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 
@@ -69,6 +70,7 @@ the git worktree is removed, and the local branch is deleted.`,
 func runClean(cmd *cobra.Command, args []string) error {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	force, _ := cmd.Flags().GetBool("force")
+	discardChanges, _ := cmd.Flags().GetBool("discard-changes")
 	includeAll, _ := cmd.Flags().GetBool("all")
 	jsonOutput := shouldOutputJSON(cmd)
 
@@ -131,12 +133,13 @@ func runClean(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
-	if !force && jsonOutput {
+	confirmBypass := force || discardChanges
+	if !confirmBypass && jsonOutput {
 		return outputError(cmd, fmt.Errorf("clean requires --force when stdout is not a terminal or --json is enabled; use --dry-run to preview"))
 	}
 
-	// Step 5: Confirm (unless --force or JSON mode)
-	if !force && !jsonOutput {
+	// Step 5: Confirm (unless --force/--discard-changes or JSON mode)
+	if !confirmBypass && !jsonOutput {
 		fmt.Fprintf(w, "Found %d stale worktrees:\n", len(stale))
 		for _, s := range stale {
 			fmt.Fprintf(w, "  %s (%s) — %s\n", s.Branch, s.Reason, s.Worktree)
@@ -167,7 +170,16 @@ func runClean(cmd *cobra.Command, args []string) error {
 			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "tmux-discovery", Message: discoveryErr.Error()})
 			continue
 		}
-		result, err := wtMgr.Remove(s.Branch, true, force)
+		expectedTip, revalidateErr := revalidateStaleWorktree(wtMgr, s, includeAll)
+		if revalidateErr != nil {
+			_ = lock.Release()
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "revalidate", Message: revalidateErr.Error()})
+			if !jsonOutput {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Skipped cleaning %s: %v\n", s.Branch, revalidateErr)
+			}
+			continue
+		}
+		result, err := wtMgr.RemoveIfBranchTip(s.Branch, true, discardChanges, expectedTip)
 		if err != nil && (result == nil || !result.WorktreeRemoved) {
 			_ = lock.Release()
 			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "worktree", Message: err.Error()})
@@ -257,6 +269,35 @@ func runClean(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
+}
+
+func revalidateStaleWorktree(wtMgr *worktree.Manager, candidate staleWorktree, includeGoneUnique bool) (string, error) {
+	beforeTip, err := wtMgr.BranchTip(candidate.Branch)
+	if err != nil {
+		return "", fmt.Errorf("candidate branch is no longer available: %w", err)
+	}
+	stale, err := findStaleWorktrees(wtMgr, includeGoneUnique)
+	if err != nil {
+		return "", fmt.Errorf("rechecking stale status: %w", err)
+	}
+	stillSafe := false
+	for _, current := range stale {
+		if current.Branch == candidate.Branch && current.Worktree == candidate.Worktree && current.Reason == candidate.Reason {
+			stillSafe = true
+			break
+		}
+	}
+	if !stillSafe {
+		return "", fmt.Errorf("candidate is no longer stale at the same branch/path/reason")
+	}
+	afterTip, err := wtMgr.BranchTip(candidate.Branch)
+	if err != nil {
+		return "", fmt.Errorf("candidate branch disappeared during revalidation: %w", err)
+	}
+	if beforeTip != afterTip {
+		return "", fmt.Errorf("branch %q changed during revalidation; aborting to preserve work", candidate.Branch)
+	}
+	return beforeTip, nil
 }
 
 // findStaleWorktrees finds worktrees whose branches are stale.
