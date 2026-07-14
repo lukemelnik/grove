@@ -21,9 +21,18 @@ type staleWorktree struct {
 }
 
 // cleanOutput is the JSON output for grove clean.
+type cleanFailure struct {
+	Branch   string `json:"branch,omitempty"`
+	Worktree string `json:"worktree,omitempty"`
+	Stage    string `json:"stage"`
+	Message  string `json:"message"`
+}
+
 type cleanOutput struct {
-	Cleaned []staleWorktree `json:"cleaned"`
-	Pruned  bool            `json:"pruned"`
+	Cleaned  []staleWorktree  `json:"cleaned"`
+	Failures []cleanFailure   `json:"failures,omitempty"`
+	Pruned   bool             `json:"pruned"`
+	Error    *structuredError `json:"error,omitempty"`
 }
 
 func newCleanCmd() *cobra.Command {
@@ -82,6 +91,11 @@ func runClean(cmd *cobra.Command, args []string) error {
 	// Step 2: Set up worktree manager
 	git := worktree.NewGitRunner(projectRoot)
 	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
+	commonStateDir, err := wtMgr.CommonStateDir()
+	if err != nil {
+		return outputError(cmd, newCodedError("git_common_dir_failed", err))
+	}
+	ctx := &projectContext{ConfigPath: configPath, ProjectRoot: projectRoot, CommonStateDir: commonStateDir, Config: cfg, Worktrees: wtMgr}
 
 	// Step 3: Find stale branches
 	stale, err := findStaleWorktrees(wtMgr, includeAll)
@@ -137,37 +151,92 @@ func runClean(cmd *cobra.Command, args []string) error {
 
 	// Step 6: Clean each stale worktree
 	var cleaned []staleWorktree
+	var failures []cleanFailure
 	for _, s := range stale {
 		// Stale branches can still have local edits, so only force removal when
 		// the user explicitly asked for it.
-		if _, err := wtMgr.Remove(s.Branch, true, force); err != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not remove worktree for %s: %v\n", s.Branch, err)
+		lock, lockErr := acquireWorkflowLock(cmd.Context(), ctx)
+		if lockErr != nil {
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "registry", Message: lockErr.Error()})
 			continue
 		}
-
-		// Kill Grove-labeled tmux targets, with legacy name fallback, only after
-		// the worktree was successfully removed.
-		tmuxCfg := cfg.Tmux
-		if tmuxCfg == nil {
-			tmuxCfg = &config.TmuxConfig{}
+		tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
+		tmuxTargets, discoveryErr := tmuxMgr.FindTargets(projectRoot, s.Branch, s.Worktree)
+		if discoveryErr != nil {
+			_ = lock.Release()
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "tmux-discovery", Message: discoveryErr.Error()})
+			continue
 		}
-		// The removed worktree path may no longer normalize to its stored label.
-		destroyTmuxForBranch(cmd, s.Branch, projectRoot, "", tmuxCfg)
+		result, err := wtMgr.Remove(s.Branch, true, force)
+		if err != nil && (result == nil || !result.WorktreeRemoved) {
+			_ = lock.Release()
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "worktree", Message: err.Error()})
+			if !jsonOutput {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to clean %s: %v\n", s.Branch, err)
+			}
+			continue
+		}
+		if result == nil || !result.WorktreeRemoved {
+			_ = lock.Release()
+			continue
+		}
+		branchFailureStart := len(failures)
+		if registryErr := reconcilePortRegistry(ctx); registryErr != nil {
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "registry", Message: registryErr.Error()})
+		}
+		if releaseErr := lock.Release(); releaseErr != nil {
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "lock", Message: releaseErr.Error()})
+		}
 
-		cleaned = append(cleaned, s)
-		if !jsonOutput {
-			fmt.Fprintf(w, "Cleaned %s\n", s.Branch)
+		if _, tmuxErr := tmuxMgr.DestroyTargets(tmuxTargets); tmuxErr != nil {
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "tmux", Message: tmuxErr.Error()})
+			if !jsonOutput {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to clean tmux for %s: %v\n", s.Branch, tmuxErr)
+			}
+		}
+
+		if result.BranchDeleteError != nil {
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "branch", Message: result.BranchDeleteError.Error()})
+			if !jsonOutput {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to delete branch %s: %v\n", s.Branch, result.BranchDeleteError)
+			}
+		} else if !result.BranchDeleted {
+			message := result.BranchSkipReason
+			if message == "" {
+				message = "branch was not deleted"
+			}
+			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "branch", Message: message})
+		}
+
+		if len(failures) == branchFailureStart {
+			cleaned = append(cleaned, s)
+			if !jsonOutput {
+				fmt.Fprintf(w, "Cleaned %s\n", s.Branch)
+			}
 		}
 	}
 
-	// Step 7: Prune worktree metadata
+	// Step 7: Prune worktree metadata under the same project mutation protocol.
 	pruned := false
-	if err := wtMgr.Prune(); err != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not prune worktree metadata: %v\n", err)
+	pruneLock, lockErr := acquireWorkflowLock(cmd.Context(), ctx)
+	if lockErr != nil {
+		failures = append(failures, cleanFailure{Stage: "lock", Message: lockErr.Error()})
 	} else {
-		pruned = true
-		if !jsonOutput {
-			fmt.Fprintln(w, "Pruned worktree metadata")
+		pruneErr := wtMgr.Prune()
+		releaseErr := pruneLock.Release()
+		switch {
+		case pruneErr != nil:
+			failures = append(failures, cleanFailure{Stage: "prune", Message: pruneErr.Error()})
+			if !jsonOutput {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Failed to prune worktree metadata: %v\n", pruneErr)
+			}
+		case releaseErr != nil:
+			failures = append(failures, cleanFailure{Stage: "lock", Message: releaseErr.Error()})
+		default:
+			pruned = true
+			if !jsonOutput {
+				fmt.Fprintln(w, "Pruned worktree metadata")
+			}
 		}
 	}
 
@@ -176,9 +245,15 @@ func runClean(cmd *cobra.Command, args []string) error {
 		if cleaned == nil {
 			cleaned = []staleWorktree{}
 		}
-		out := cleanOutput{Cleaned: cleaned, Pruned: pruned}
+		out := cleanOutput{Cleaned: cleaned, Failures: failures, Pruned: pruned}
+		if len(failures) > 0 {
+			out.Error = &structuredError{Code: "clean_partial_failure", Message: fmt.Sprintf("clean completed with %d failure(s)", len(failures))}
+		}
 		data, _ := json.MarshalIndent(out, "", "  ")
 		fmt.Fprintln(w, string(data))
+	}
+	if len(failures) > 0 {
+		return &reportedError{cause: newCodedError("clean_partial_failure", fmt.Errorf("clean completed with %d failure(s)", len(failures)))}
 	}
 
 	return nil
@@ -213,8 +288,7 @@ func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]stal
 	// Find merged branches
 	mergedBranches, err := wtMgr.MergedBranches(defaultBranch)
 	if err != nil {
-		// Non-fatal: merged detection might fail in some repo states
-		mergedBranches = nil
+		return nil, fmt.Errorf("listing branches merged into %s: %w", defaultBranch, err)
 	}
 
 	// Collect stale worktrees (only those that have an active worktree)
@@ -235,7 +309,7 @@ func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]stal
 		}
 		hasUnique, err := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
 		if err != nil {
-			continue
+			return nil, fmt.Errorf("checking unique commits for gone branch %q: %w", branch, err)
 		}
 		reason := "gone"
 		if hasUnique {
@@ -267,7 +341,10 @@ func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]stal
 		seen[branch] = true
 		reason := "merged"
 		hasUnique, err := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
-		if err == nil && !hasUnique {
+		if err != nil {
+			return nil, fmt.Errorf("checking unique commits for merged branch %q: %w", branch, err)
+		}
+		if !hasUnique {
 			reason = "unchanged"
 		}
 		stale = append(stale, staleWorktree{
@@ -283,39 +360,4 @@ func findStaleWorktrees(wtMgr *worktree.Manager, includeGoneUnique bool) ([]stal
 	})
 
 	return stale, nil
-}
-
-// destroyTmuxForBranch kills tmux targets for a branch, ignoring errors.
-func destroyTmuxForBranch(cmd *cobra.Command, branch, projectRoot, worktreePath string, tmuxCfg *config.TmuxConfig) {
-	tmuxRunner := tmuxRunnerFactory()
-	tmuxMgr := tmux.NewManager(tmuxRunner)
-
-	killedLabeled, killErr := tmuxMgr.DestroyLabeled(projectRoot, branch, worktreePath)
-	if killErr != nil {
-		fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill labeled tmux target for %s: %v\n", branch, killErr)
-	}
-	if killedLabeled {
-		return
-	}
-
-	mode := tmuxCfg.Mode
-	if mode == "" {
-		mode = "window"
-	}
-	name := tmuxMgr.ResolveName(branch, mode)
-
-	switch mode {
-	case "session":
-		if tmuxMgr.HasSession(name) {
-			if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux session for %s: %v\n", branch, err)
-			}
-		}
-	case "window":
-		if tmuxMgr.HasWindow(name) {
-			if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux window for %s: %v\n", branch, err)
-			}
-		}
-	}
 }

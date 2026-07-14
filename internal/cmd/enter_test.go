@@ -72,6 +72,61 @@ env_files:
 	}
 }
 
+func TestEnterCmd_MainDoesNotAlterOrCreateGeneratedLocals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/runtime
+env:
+  BRANCH_HASH: "branch-hash-{{branch}}"
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := filepath.Join(repoDir, "config", "runtime")
+	localPath := filepath.Join(repoDir, "config", "runtime.local")
+	runtimeWant := []byte("RUNTIME=canonical\n")
+	localWant := []byte("user local bytes\n")
+	if err := os.WriteFile(runtimePath, runtimeWant, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, localWant, 0600); err != nil {
+		t.Fatal(err)
+	}
+	missingLocal := filepath.Join(repoDir, "config", "missing.local")
+
+	mockWorkingDir(t, repoDir)
+	origLauncher := shellLauncher
+	shellLauncher = func(shellLaunchOptions) error { return nil }
+	t.Cleanup(func() { shellLauncher = origLauncher })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"enter", "main"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("enter main failed: %v\nOutput: %s", err, buf.String())
+	}
+	gotRuntime, _ := os.ReadFile(runtimePath)
+	gotLocal, _ := os.ReadFile(localPath)
+	if !bytes.Equal(gotRuntime, runtimeWant) || !bytes.Equal(gotLocal, localWant) {
+		t.Fatalf("main env files changed: runtime=%q local=%q", gotRuntime, gotLocal)
+	}
+	if strings.Contains(string(gotLocal), "branch-hash-main") {
+		t.Fatalf("generated branch value appeared in canonical local: %q", gotLocal)
+	}
+	if _, err := os.Lstat(missingLocal); !os.IsNotExist(err) {
+		t.Fatalf("missing local existence error = %v, want missing", err)
+	}
+}
+
 func TestEnterCmd_EnvCollisionDoesNotLaunchShell(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

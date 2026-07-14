@@ -1200,3 +1200,106 @@ func TestDiscover_LinkedWorktreePrefersMainRepoConfig(t *testing.T) {
 		t.Errorf("expected main project root %s, got %s", mainRepo, projectRoot)
 	}
 }
+
+func TestParse_HooksEnvPassthroughAndTimeout(t *testing.T) {
+	cfg, err := Parse([]byte(`
+hooks:
+  env_passthrough: [CUSTOM_ENV]
+  timeout: 500ms
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Hooks.Timeout.String(); got != "500ms" {
+		t.Fatalf("timeout = %s", got)
+	}
+	if cfg.Hooks.EnvPassthrough[0] != "CUSTOM_ENV" {
+		t.Fatalf("bad passthrough")
+	}
+}
+
+func TestParse_RejectsInvalidHooksEnvPassthroughAndTimeout(t *testing.T) {
+	if _, err := Parse([]byte("hooks:\n  env_passthrough: ['BAD-NAME']\n")); err == nil {
+		t.Fatal("expected invalid env_passthrough error")
+	}
+	if _, err := Parse([]byte("hooks:\n  timeout: 2h\n")); err == nil {
+		t.Fatal("expected timeout max error")
+	}
+}
+
+func TestParse_RejectsGlobalEnvServiceCollisions(t *testing.T) {
+	if _, err := Parse([]byte(`
+env:
+  PORT: "3000"
+services:
+  app:
+    port:
+      base: 3000
+      var: PORT
+`)); err == nil {
+		t.Fatal("expected port collision")
+	}
+	if _, err := Parse([]byte(`
+env:
+  API_URL: x
+services:
+  app:
+    env_file: .env
+    env:
+      API_URL: y
+`)); err == nil {
+		t.Fatal("expected service env collision")
+	}
+}
+
+func TestValidateHooks_OutputMode(t *testing.T) {
+	for _, mode := range []string{"", "summary", "stream", "quiet"} {
+		if err := ValidateHooks(&HooksConfig{Output: mode}); err != nil {
+			t.Fatalf("mode %q: %v", mode, err)
+		}
+	}
+	if err := ValidateHooks(&HooksConfig{Output: "verbose"}); err == nil {
+		t.Fatal("expected invalid hooks.output")
+	}
+}
+
+func TestParse_StrictUnknownNestedFields(t *testing.T) {
+	cases := []string{
+		"unknown: true\n",
+		"hooks:\n  post_create: []\n  unknown: true\n",
+		"services:\n  app:\n    mystery: true\n",
+		"tmux:\n  panes:\n    - cmd: nvim\n      mystery: true\n",
+	}
+	for _, tc := range cases {
+		if _, err := Parse([]byte(tc)); err == nil {
+			t.Fatalf("expected unknown field error for %q", tc)
+		}
+	}
+}
+
+func TestParse_StrictRejectsMultipleDocuments(t *testing.T) {
+	if _, err := Parse([]byte("worktree_dir: ../worktrees\n---\nenv: {}\n")); err == nil {
+		t.Fatal("expected multiple YAML documents to be rejected")
+	}
+}
+
+func TestParse_StrictKeepsDocumentedAliasesAndPaneForms(t *testing.T) {
+	_, err := Parse([]byte(`
+services:
+  app:
+    port:
+      base: 3000
+      env: PORT
+tmux:
+  panes:
+    - nvim
+    - cmd: pnpm dev
+      optional: true
+    - split: vertical
+      panes:
+        - cmd: claude
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+}

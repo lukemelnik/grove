@@ -2,13 +2,16 @@
 package config
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -85,6 +88,16 @@ type HooksConfig struct {
 	// PreDelete lists scripts to run before worktree deletion.
 	// Paths are relative to the project root and cannot escape it.
 	PreDelete []string `yaml:"pre_delete,omitempty"`
+
+	// EnvPassthrough lists additional parent environment variables to pass to hooks.
+	EnvPassthrough []string `yaml:"env_passthrough,omitempty"`
+
+	// Timeout limits each hook script. Defaults are applied by hook execution.
+	Timeout    time.Duration `yaml:"-"`
+	TimeoutRaw string        `yaml:"timeout,omitempty"`
+
+	// Output controls child output: summary (default), stream, or quiet.
+	Output string `yaml:"output,omitempty"`
 }
 
 // Service represents a service with a base port, an env file, and optional env vars.
@@ -121,6 +134,9 @@ func (sp *ServicePort) UnmarshalYAML(value *yaml.Node) error {
 		Base int    `yaml:"base"`
 		Var  string `yaml:"var"`
 		Env  string `yaml:"env"`
+	}
+	if err := rejectUnknownMappingKeys(value, map[string]bool{"base": true, "var": true, "env": true}); err != nil {
+		return err
 	}
 	if err := value.Decode(&raw); err != nil {
 		return err
@@ -218,6 +234,12 @@ func (p *Pane) UnmarshalYAML(value *yaml.Node) error {
 
 	// Map form: use an alias type to avoid infinite recursion
 	if value.Kind == yaml.MappingNode {
+		if err := rejectUnknownMappingKeys(value, map[string]bool{
+			"name": true, "cmd": true, "setup": true, "optional": true,
+			"size": true, "autorun": true, "split": true, "panes": true,
+		}); err != nil {
+			return err
+		}
 		type paneAlias Pane
 		var alias paneAlias
 		if err := value.Decode(&alias); err != nil {
@@ -276,7 +298,7 @@ func LoadNoValidate(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config file: %w", err)
 	}
 	cfg := DefaultConfig()
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := parseStrict(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 	cfg.ApplyProjectDefaults(filepath.Dir(path))
@@ -286,7 +308,7 @@ func LoadNoValidate(path string) (*Config, error) {
 // Parse parses raw YAML bytes into a Config.
 func Parse(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := parseStrict(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
 
@@ -295,6 +317,56 @@ func Parse(data []byte) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+func parseStrict(data []byte, out any) error {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(out); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	var extra yaml.Node
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("multiple YAML documents are not supported")
+		}
+		return err
+	}
+	return nil
+}
+
+func rejectUnknownMappingKeys(node *yaml.Node, allowed map[string]bool) error {
+	if node.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i < len(node.Content); i += 2 {
+		key := node.Content[i].Value
+		if !allowed[key] {
+			return fmt.Errorf("field %s not found", key)
+		}
+	}
+	return nil
+}
+
+// ParseHookTimeout validates a hook timeout duration. Empty means caller default.
+func ParseHookTimeout(raw string) (time.Duration, error) {
+	if raw == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, err
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive")
+	}
+	if d > time.Hour {
+		return 0, fmt.Errorf("must not exceed 1h")
+	}
+	return d, nil
 }
 
 // AllEnvFiles returns the union of top-level env_files and service-level env_file
@@ -347,6 +419,34 @@ func ValidateHookScripts(lifecycle string, scripts []string) error {
 		seen[cleaned] = true
 	}
 	return nil
+}
+
+// ValidateHooks validates hook-only configuration without requiring unrelated
+// service configuration to be valid. This is used by destructive commands that
+// intentionally load the rest of the config without semantic validation.
+func ValidateHooks(hooks *HooksConfig) error {
+	if hooks == nil {
+		return nil
+	}
+	for _, key := range hooks.EnvPassthrough {
+		if !IsValidEnvVarName(key) {
+			return fmt.Errorf("hooks.env_passthrough contains an invalid environment variable name")
+		}
+	}
+	timeout, err := ParseHookTimeout(hooks.TimeoutRaw)
+	if err != nil {
+		return fmt.Errorf("hooks.timeout: %w", err)
+	}
+	hooks.Timeout = timeout
+	switch hooks.Output {
+	case "", "summary", "stream", "quiet":
+	default:
+		return fmt.Errorf("hooks.output must be one of summary, stream, or quiet")
+	}
+	if err := ValidateHookScripts("post_create", hooks.PostCreate); err != nil {
+		return err
+	}
+	return ValidateHookScripts("pre_delete", hooks.PreDelete)
 }
 
 // Validate checks that the config is well-formed.
@@ -434,10 +534,23 @@ func Validate(cfg *Config) error {
 		}
 	}
 
+	serviceEnvKeys := make(map[string]string)
+	for name, svc := range cfg.Services {
+		if svc.HasPort() {
+			serviceEnvKeys[svc.Port.Env] = fmt.Sprintf("service %q port.var", name)
+		}
+		for key := range svc.Env {
+			serviceEnvKeys[key] = fmt.Sprintf("service %q env", name)
+		}
+	}
+
 	// Validate top-level managed environment names and values.
 	for key, value := range cfg.Env {
 		if !IsValidEnvVarName(key) {
 			return fmt.Errorf("env contains an invalid environment variable name")
+		}
+		if owner, exists := serviceEnvKeys[key]; exists {
+			return fmt.Errorf("env var %q collides with %s", key, owner)
 		}
 		if err := validateEnvValue("env", value); err != nil {
 			return err
@@ -455,14 +568,9 @@ func Validate(cfg *Config) error {
 		}
 	}
 
-	// Validate hooks
-	if cfg.Hooks != nil {
-		if err := ValidateHookScripts("post_create", cfg.Hooks.PostCreate); err != nil {
-			return err
-		}
-		if err := ValidateHookScripts("pre_delete", cfg.Hooks.PreDelete); err != nil {
-			return err
-		}
+	// Validate hooks.
+	if err := ValidateHooks(cfg.Hooks); err != nil {
+		return err
 	}
 
 	// Validate tmux config

@@ -83,6 +83,51 @@ tmux:
 	}
 }
 
+func TestOpenCmd_DoesNotAttachToUnlabeledSameNameTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	gitRun(t, repoDir, "branch", "feat/unlabeled")
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/unlabeled")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/unlabeled")
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+
+	runner := &recordingTmuxRunner{
+		hasWindowResult: true,
+		currentSession:  "dev",
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "",
+			"new-window -P -F #{window_id} -t dev -n " + tmux.SessionName("feat/unlabeled") + " -c " + wtPath:                                                     "@55",
+		},
+	}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "feat/unlabeled"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("open failed: %v\nOutput: %s", err, buf.String())
+	}
+	if !tmuxCommandSeen(runner, "new-window") {
+		t.Fatalf("expected unlabeled target to be ignored and recreated, got %v", runner.commands)
+	}
+}
+
 func TestOpenCmd_RecreatesMissingCanonicalTarget(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -181,6 +226,109 @@ tmux:
 	}
 	if !tmuxCommandSeen(runner, "new-session") {
 		t.Fatalf("expected absent canonical workspace to be recreated, got %v", runner.commands)
+	}
+}
+
+func TestOpenCmd_MainRecreationDoesNotAlterOrCreateGeneratedLocals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/runtime
+env:
+  BRANCH_HASH: "branch-hash-{{branch}}"
+tmux:
+  mode: session
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	runtimePath := filepath.Join(repoDir, "config", "runtime")
+	localPath := filepath.Join(repoDir, "config", "runtime.local")
+	runtimeWant := []byte("RUNTIME=canonical\n")
+	localWant := []byte("user local bytes\n")
+	if err := os.WriteFile(runtimePath, runtimeWant, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath, localWant, 0600); err != nil {
+		t.Fatal(err)
+	}
+	missingLocal := filepath.Join(repoDir, "config", "missing.local")
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "")
+	runner := &recordingTmuxRunner{}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "main"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("open main failed: %v\nOutput: %s", err, buf.String())
+	}
+	gotRuntime, _ := os.ReadFile(runtimePath)
+	gotLocal, _ := os.ReadFile(localPath)
+	if !bytes.Equal(gotRuntime, runtimeWant) || !bytes.Equal(gotLocal, localWant) {
+		t.Fatalf("main env files changed: runtime=%q local=%q", gotRuntime, gotLocal)
+	}
+	if strings.Contains(string(gotLocal), "branch-hash-main") {
+		t.Fatalf("generated branch value appeared in canonical local: %q", gotLocal)
+	}
+	if _, err := os.Lstat(missingLocal); !os.IsNotExist(err) {
+		t.Fatalf("missing local existence error = %v, want missing", err)
+	}
+}
+
+func TestOpenCmd_MainNewWindowDoesNotCreateGeneratedLocals(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/runtime
+env:
+  BRANCH_HASH: "branch-hash-{{branch}}"
+tmux:
+  mode: window
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "runtime"), []byte("RUNTIME=canonical\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	localPath := filepath.Join(repoDir, "config", "runtime.local")
+
+	mockWorkingDir(t, repoDir)
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := &recordingTmuxRunner{currentSession: "dev"}
+	origFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = origFactory })
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"open", "main", "--new-window"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("open main --new-window failed: %v\nOutput: %s", err, buf.String())
+	}
+	if _, err := os.Lstat(localPath); !os.IsNotExist(err) {
+		t.Fatalf("generated local existence error = %v, want missing", err)
 	}
 }
 

@@ -13,8 +13,8 @@ grove create feat/auth
 # worktree + ports + env + tmux — done
 ```
 
-- **Deterministic ports** — default branch uses base ports; other branch names get stable hash-based offsets
-- **Layered env** — `.env` files symlinked from the main repo, `.env.local` generated per-branch with ports, `{{service.port}}` and `{{branch}}` templates
+- **Durable ports** — active worktrees get collision-free, stable port assignments stored under Git common state
+- **Layered env** — linked worktrees get main-repo `.env` symlinks plus generated `.env.local` files; the main checkout is never modified
 - **Tmux workspaces** — from a flat pane list to explicit splits to raw layout strings, four tiers of control
 - **Agent-ready** — auto-JSON when piped, structured errors on stderr, and `grove clean --dry-run` for cleanup previews
 - **Works from anywhere** — run grove commands from any worktree, not just the main repo
@@ -46,7 +46,7 @@ make install    # symlinks to ~/.local/bin
 
 `go install` writes `grove` to `$GOBIN` or `$GOPATH/bin`, so make sure that directory is on your `PATH`.
 
-Prebuilt archives for all platforms are published on each [GitHub Release](https://github.com/lukemelnik/grove/releases/latest).
+Prebuilt archives for all platforms are published on each [GitHub Release](https://github.com/lukemelnik/grove/releases/latest). On Windows, the installed binary is `grove.exe`.
 
 ### Shell Completions
 
@@ -88,7 +88,7 @@ Grove is configured via `.grove.yml` in your project root.
 services:
   app:
     port:
-      base: 3000        # starting port — main branch uses this directly, others get an offset
+      base: 3000        # starting point for durable active-worktree port allocation
       var: PORT          # env var name that receives the computed port
 ```
 
@@ -142,12 +142,15 @@ hooks:
 | `worktree_dir` | `../.grove-worktrees/<repo-name>` | Optional override for where worktrees are created (relative to project root) |
 | `env_files` | — | Env files to symlink (for files not tied to a service) |
 | `services` | — | Services with ports, env files, and env vars |
-| `services.<name>.port.base` | — | Base port number (1-65535). Main branch uses this directly; other branches add a hash offset. |
+| `services.<name>.port.base` | — | Base port number (1-65535). Active worktrees receive durable collision-free assignments. |
 | `services.<name>.port.var` | — | Env var name that receives the computed port (written to `.env.local`) |
 | `services.<name>.env_file` | — | The `.env` file for this service (auto-symlinked). Required if you use `services.<name>.env`. |
 | `services.<name>.env` | — | Additional env vars scoped to this service's `.env.local` |
 | `env` | — | Global env vars (written to all `.env.local` files) |
 | `tmux` | — | Tmux workspace configuration |
+| `hooks.timeout` | `2m` | Per-hook timeout. Maximum `1h`. |
+| `hooks.output` | `summary` | `summary`/`quiet` suppress child output; `stream` explicitly forwards potentially secret-bearing output. |
+| `hooks.env_passthrough` | — | Additional parent environment variable names allowed through to hooks. |
 | `hooks.post_create` | — | Scripts to run after worktree creation (before tmux setup) |
 | `hooks.pre_delete` | — | Scripts to run before tmux/worktree deletion |
 
@@ -208,7 +211,7 @@ grove create feat/auth --with dev --with test  # Include specific optional panes
 
 ### `grove open <branch>`
 
-Open or restore the full tmux workspace for an existing worktree. Grove labels its own tmux targets, so renamed Grove windows/sessions can still be found. If the labeled target was closed, Grove recreates the layout.
+Open or restore the full tmux workspace for an existing worktree. Grove manages only labeled tmux targets; the old unlabeled-name fallback is intentionally removed. If the labeled target was closed, Grove recreates the layout transactionally.
 
 ```bash
 grove open feat/auth              # Open or restore the canonical workspace
@@ -238,6 +241,7 @@ Removes the worktree, kills the tmux session/window, and deletes the local branc
 
 ```bash
 grove delete feat/auth              # Safety checks first, then delete
+grove delete feat/auth --dry-run    # Preview what would be removed
 grove delete feat/auth --force      # Skip all safety checks
 grove delete feat/auth --keep-branch  # Remove worktree but keep the git branch
 ```
@@ -299,7 +303,7 @@ grove clean --all        # Also include deleted-remote branches that still have 
 grove clean --force      # Skip confirmation
 ```
 
-For each stale worktree, grove kills the tmux session/window, removes the worktree, deletes the local branch, and prunes git worktree metadata.
+For each stale worktree, grove kills the managed tmux target, removes the worktree, deletes the local branch, and prunes git worktree metadata. `clean` and `delete` return nonzero on partial failures instead of reporting success.
 
 ### `grove status`
 
@@ -325,22 +329,13 @@ Grove walks up from your current directory looking for `.grove.yml`. If it doesn
 
 ### Port Assignment
 
-Ports are assigned **deterministically** based on the branch name. The same branch always gets the same ports, no matter when or how many times you run `grove create`.
+Ports are assigned from a durable registry stored under the Git common state directory at `grove/ports.json`. Registry mutations are guarded by a cross-process lock, so active worktrees receive collision-free assignments and existing active records stay stable across commands.
 
-The **default branch** (main/master) uses the base ports directly — `api: 4000` and `web: 3000`. All other branches get a hash-based offset:
-
-```
-offset = md5(branch_name) mod 3000
-assigned_port = base_port + offset
-```
-
-For example, `feat/auth` might get offset 45, giving you `api: 4045` and `web: 3045`.
-
-All services share the same offset, so port relationships are preserved. Browser-restricted ports (from the WHATWG Fetch spec) are automatically avoided — and rejected at config time if used as base ports.
+The registry contains only branch/service/port metadata, never secret values. Browser-restricted ports (from the WHATWG Fetch spec) are automatically avoided — and rejected at config time if used as base ports. If the registry is malformed or no longer matches the configured services/base ports, Grove fails closed instead of guessing.
 
 ### Environment Variables
 
-In worktrees, `.env` files are **symlinked** from the main repo so secrets stay in one place. Grove writes `.env.local` files next to each symlink with branch-specific port assignments and template-resolved values. Most frameworks (Vite, Next.js, CRA, Rails) load `.env.local` and override `.env` automatically.
+In linked worktrees, `.env` files are **symlinked** from the main repo so secrets stay in one place. Grove writes marker-owned `.env.local` files next to each symlink with branch-specific port assignments and template-resolved values. Unsafe values are quoted/escaped. Most frameworks (Vite, Next.js, CRA, Rails) load `.env.local` and override `.env` automatically.
 
 ```
 main repo                          worktree (feat/auth)
@@ -352,7 +347,7 @@ main repo                          worktree (feat/auth)
 
 Each service declares its own `env_file` and `env` vars. Service-scoped vars are written only to that service's `.env.local` — no cross-contamination. If you use `services.<name>.env`, you must also set `services.<name>.env_file` so Grove knows which `.env.local` to write.
 
-**Filesystem safety:** canonical environment sources are read-only to Grove. Source symlinking is a no-op in the main worktree. In linked worktrees, Grove creates or atomically repairs symlinks only after validating the canonical source; it never replaces an existing regular destination. Missing sources are optional and leave destinations untouched, while broken, cyclic, dangling, unreadable, or otherwise unsafe sources abort setup. Generated local files are replaced atomically only when their first line is `# Generated by grove — do not edit`; unmarked files and symlinks are preserved and rejected. Grove does not print environment values in diagnostics. See [SECURITY.md](SECURITY.md) for the affected-version notice for `v0.1.0` through `v0.5.1`.
+**Filesystem safety:** canonical environment sources are read-only to Grove. When the project root and worktree are the same location, Grove does not create, replace, write, symlink, or delete any configured env file or generated local; in-memory ports may still feed tmux/shell env, and existing or missing local files remain untouched. In linked worktrees, Grove creates or atomically repairs symlinks only after validating the canonical source; it never replaces an existing regular destination. Missing sources are optional and leave destinations untouched, while broken, cyclic, dangling, unreadable, or otherwise unsafe sources abort setup. Generated local files are replaced atomically only when their first line is `# Generated by grove — do not edit`; unmarked files and symlinks are preserved and rejected. Global/service managed env key collisions are rejected, unknown YAML fields are rejected, and Grove does not print environment values in diagnostics. See [SECURITY.md](SECURITY.md) for the affected-version notice for `v0.1.0` through `v0.5.1`.
 
 **Template variables:**
 
@@ -397,6 +392,10 @@ Grove can run scripts at specific lifecycle points. Scripts run sequentially.
 
 ```yaml
 hooks:
+  timeout: 2m
+  output: summary  # summary (default), stream, or quiet
+  env_passthrough:
+    - CUSTOM_SAFE_ENV
   post_create:
     - scripts/grove-post-create.sh
   pre_delete:
@@ -409,7 +408,7 @@ hooks:
 
 The working directory is set to the worktree path.
 
-Each script receives these environment variables:
+Each script receives a minimal parent env allowlist (`PATH`, user/home/temp/locale/terminal basics), any names listed in `hooks.env_passthrough`, and these Grove variables:
 
 | Variable | Description |
 |----------|-------------|
@@ -431,7 +430,7 @@ enum LocalConfig {
 EOF
 ```
 
-Scripts are resolved relative to the project root. Paths must be relative and cannot escape the project root.
+Scripts are resolved relative to the project root. Paths must be relative and the resolved script must remain inside the project root. Each script defaults to a `2m` timeout, configurable with `hooks.timeout` up to `1h`; timeout cancellation terminates the hook process tree. `hooks.output` defaults to secret-safe `summary`, which suppresses child output, while `quiet` also suppresses it and `stream` explicitly forwards child output. Streaming is opt-in because hook output may contain secrets. Hook errors never include captured child stdout/stderr. `pre_delete` timeout/failure blocks deletion before mutation; `post_create` timeout/failure remains a warning.
 
 ## Tmux Layouts
 
@@ -570,7 +569,7 @@ tmux:
   mode: window     # Each worktree gets a window in your current tmux session (default)
 ```
 
-**Window mode** (default) keeps all worktrees as windows in one tmux session. Run `grove create` from inside tmux so Grove knows which session to add the new window to. Each worktree gets its own `.env.local` files with branch-specific ports, so environment doesn't leak between windows.
+**Window mode** (default) keeps all linked worktrees as windows in one tmux session. Run `grove create` from inside tmux so Grove knows which session to add the new window to. New target setup is transactional, and deleting the last Grove-managed window preserves the containing session with a placeholder or fails closed.
 
 **Session mode** gives each worktree a fully isolated tmux session. Grove also injects top-level `env` vars plus each service's port env var via `tmux set-environment` as a fallback for tools that read env vars directly. Service-scoped `services.<name>.env` values stay in each service's `.env.local`.
 
@@ -612,7 +611,7 @@ Agent rules:
 - Avoid interactive `grove list`/fzf; use `--json`.
 - Do not pass `--force` to `delete` or `clean` without explicit user approval.
 
-**Safe mutations** — `grove clean --dry-run` previews before acting, `--force` skips prompts only after explicit approval.
+**Safe mutations** — `grove clean --dry-run` and `grove delete --dry-run` preview before acting. Before hooks run, ownership-aware create rollback removes only resources Grove created; after a post-create hook runs, Grove retains the worktree on later tmux failure because the hook may have produced files. `--force` skips prompts only after explicit approval. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
 
 ## Example Configs
 
@@ -702,7 +701,7 @@ Grove uses an **explicit-invocation** model — nothing happens until you run `g
 
 **Pane commands and hooks are code.** The `cmd` and `setup` fields in `tmux.panes` and the scripts listed in `hooks.post_create` or `hooks.pre_delete` are executed as shell commands. Review `.grove.yml` before running `grove create` or `grove delete` in an unfamiliar repo, just as you would review a `Makefile` or `package.json` scripts.
 
-**Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time. Canonical sources are never modified, user-managed regular destinations are never overwritten, generated local files are marker-owned and atomically replaced, unsafe sources abort setup, and environment values are never logged.
+**Env files are constrained.** `env_files` paths must be relative to the project root and cannot escape it — absolute paths and `../` prefixes are rejected at config validation time. Canonical sources are never modified, the main checkout is immutable for configured env files/generated locals, user-managed regular destinations are never overwritten, generated local files are marker-owned and atomically replaced, unsafe sources abort setup, global/service key collisions are rejected, and environment values are never logged.
 
 ## Releasing
 
@@ -734,6 +733,8 @@ git push origin v0.4.1
 Any pushed `v*` tag runs the release workflow, executes `go test ./...`, and publishes GitHub release assets with GoReleaser. Local `make build` also embeds a version string automatically from the nearest git tag, or you can override it with `make build VERSION=0.4.1`.
 
 Homebrew is intentionally not part of the first release cut. A tap is convenient for macOS users, but it adds a second repository, publishing credentials, and ongoing formula maintenance. `go install` plus GitHub Releases stays cross-platform and is the lowest-complexity path until Grove has enough release volume to justify the extra packaging surface.
+
+Compatibility/security note: `v0.1.0` through `v0.5.1` are affected by the main-checkout environment-file synchronization bug described in [SECURITY.md](SECURITY.md). Use `v0.5.2` or newer for the immutable-main-checkout behavior documented here.
 
 ## Requirements
 

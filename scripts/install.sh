@@ -55,11 +55,25 @@ else
 fi
 
 # Install
-if [ -w "$INSTALL_DIR" ]; then
-  mv grove "$INSTALL_DIR/grove"
+if [ "$os" = "windows" ]; then
+  source_bin="grove.exe"
+  target_bin="grove.exe"
 else
-  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mv grove "$INSTALL_DIR/grove"
+  source_bin="grove"
+  target_bin="grove"
 fi
 
-echo "grove ${version} installed to ${INSTALL_DIR}/grove"
+target_path="${INSTALL_DIR}/${target_bin}"
+if [ "$os" != "windows" ]; then
+  chmod +x "$source_bin"
+fi
+if [ -w "$INSTALL_DIR" ]; then
+  mv "$source_bin" "$target_path"
+elif [ "$os" = "windows" ]; then
+  fail "${INSTALL_DIR} is not writable — set GROVE_INSTALL_DIR to a writable directory"
+else
+  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
+  sudo mv "$source_bin" "$target_path"
+fi
+
+echo "grove ${version} installed to ${target_path}"

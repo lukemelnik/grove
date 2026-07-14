@@ -94,11 +94,29 @@ func TestOutputError_JSONMode(t *testing.T) {
 	}
 
 	stderr := errBuf.String()
-	if !strings.Contains(stderr, `"error"`) {
-		t.Errorf("expected JSON error on stderr, got: %s", stderr)
+	if !strings.Contains(stderr, `"error"`) || !strings.Contains(stderr, `"code":"command_failed"`) {
+		t.Errorf("expected coded JSON error on stderr, got: %s", stderr)
 	}
 	if !strings.Contains(stderr, "something went wrong") {
 		t.Errorf("expected error message in JSON, got: %s", stderr)
+	}
+}
+
+func TestOutputError_PreservesStableCode(t *testing.T) {
+	origIsTerminal := isTerminal
+	isTerminal = func(int) bool { return false }
+	defer func() { isTerminal = origIsTerminal }()
+
+	rootCmd := NewRootCmd()
+	listCmd, _, err := rootCmd.Find([]string{"list"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errBuf bytes.Buffer
+	listCmd.SetErr(&errBuf)
+	_ = outputError(listCmd, newCodedError("port_registry_invalid", errors.New("invalid registry")))
+	if !strings.Contains(errBuf.String(), `"code":"port_registry_invalid"`) {
+		t.Fatalf("stable code missing: %s", errBuf.String())
 	}
 }
 

@@ -1,10 +1,12 @@
 package hooks
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func writeScript(t *testing.T, path, content string) {
@@ -228,5 +230,106 @@ func TestRunPostCreate_ContinuesAfterFailure(t *testing.T) {
 	// Second script should still run
 	if _, err := os.Stat(markerFile); os.IsNotExist(err) {
 		t.Error("expected second script to run after first script failed")
+	}
+}
+
+func TestRunPreDelete_OutputSummaryRedactsChildOutput(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeScript(t, filepath.Join(projectRoot, "leak.sh"), "#!/bin/bash\necho secret-payload >&2\nexit 1\n")
+	err := RunPreDelete([]string{"leak.sh"}, RunOpts{ProjectRoot: projectRoot, WorktreePath: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if strings.Contains(err.Error(), "secret-payload") {
+		t.Fatalf("child output leaked: %v", err)
+	}
+}
+
+func TestRunPreDelete_OutputStreamIsExplicit(t *testing.T) {
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	writeScript(t, filepath.Join(projectRoot, "stream.sh"), "#!/bin/sh\nprintf visible-output\n")
+	var stdout bytes.Buffer
+	if err := RunPreDelete([]string{"stream.sh"}, RunOpts{
+		ProjectRoot:  projectRoot,
+		WorktreePath: worktreePath,
+		OutputMode:   OutputStream,
+		Stdout:       &stdout,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if stdout.String() != "visible-output" {
+		t.Fatalf("stream output = %q", stdout.String())
+	}
+}
+
+func TestRunPreDelete_Timeout(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeScript(t, filepath.Join(projectRoot, "slow.sh"), "#!/bin/bash\nsleep 1\n")
+	err := RunPreDelete([]string{"slow.sh"}, RunOpts{ProjectRoot: projectRoot, WorktreePath: t.TempDir(), Timeout: 10 * time.Millisecond})
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	if !strings.Contains(err.Error(), "deadline exceeded") {
+		t.Fatalf("expected deadline error, got %v", err)
+	}
+}
+
+func TestRunPreDelete_TimeoutKillsDescendantProcesses(t *testing.T) {
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	marker := filepath.Join(worktreePath, "descendant-survived")
+	script := "#!/bin/sh\n(sleep 0.2; printf survived > \"" + marker + "\") &\nwait\n"
+	writeScript(t, filepath.Join(projectRoot, "spawn.sh"), script)
+
+	err := RunPreDelete([]string{"spawn.sh"}, RunOpts{
+		ProjectRoot:  projectRoot,
+		WorktreePath: worktreePath,
+		Timeout:      20 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("hook descendant survived timeout: %v", err)
+	}
+}
+
+func TestRunPreDelete_RejectsSymlinkEscape(t *testing.T) {
+	projectRoot := t.TempDir()
+	outside := t.TempDir()
+	writeScript(t, filepath.Join(outside, "evil.sh"), "#!/bin/bash\nexit 0\n")
+	if err := os.Symlink(filepath.Join(outside, "evil.sh"), filepath.Join(projectRoot, "evil.sh")); err != nil {
+		t.Fatal(err)
+	}
+	err := RunPreDelete([]string{"evil.sh"}, RunOpts{ProjectRoot: projectRoot, WorktreePath: t.TempDir()})
+	if err == nil {
+		t.Fatal("expected symlink escape error")
+	}
+}
+
+func TestRunPreDelete_EnvAllowlistAndPassthrough(t *testing.T) {
+	t.Setenv("SECRET_TOKEN", "nope")
+	t.Setenv("GROVE_SECRET_TOKEN", "also-nope")
+	t.Setenv("EXTRA_OK", "yes")
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	outFile := filepath.Join(worktreePath, "env.txt")
+	writeScript(t, filepath.Join(projectRoot, "env.sh"), "#!/bin/bash\nenv | sort > "+outFile+"\n")
+	err := RunPreDelete([]string{"env.sh"}, RunOpts{ProjectRoot: projectRoot, WorktreePath: worktreePath, EnvPassthrough: []string{"EXTRA_OK"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := string(data)
+	if !strings.Contains(out, "EXTRA_OK=yes") {
+		t.Fatalf("missing passthrough env: %s", out)
+	}
+	if strings.Contains(out, "SECRET_TOKEN=nope") || strings.Contains(out, "GROVE_SECRET_TOKEN=also-nope") {
+		t.Fatalf("unexpected env leak: %s", out)
 	}
 }

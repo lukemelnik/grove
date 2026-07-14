@@ -197,12 +197,15 @@ func TestCleanCmd_PreservesDirtyWorktreeWithoutForce(t *testing.T) {
 	rootCmd.SetArgs([]string{"clean"})
 
 	err := rootCmd.Execute()
-	if err != nil {
-		t.Fatalf("clean failed: %v\nOutput: %s", err, buf.String())
+	if err == nil {
+		t.Fatalf("expected clean partial failure\nOutput: %s", buf.String())
+	}
+	if !ErrorAlreadyReported(err) {
+		t.Fatalf("expected already-reported error, got: %v", err)
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "Warning: could not remove worktree for feat/dirty-clean") {
+	if !strings.Contains(output, "Failed to clean feat/dirty-clean") {
 		t.Errorf("expected warning about dirty worktree, got:\n%s", output)
 	}
 	if strings.Contains(output, "Cleaned feat/dirty-clean") {
@@ -628,10 +631,15 @@ tmux:
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
-	rootCmd.SetArgs([]string{"clean", "--force"})
+	rootCmd.SetArgs([]string{"clean", "--force", "--json"})
 
-	if err := rootCmd.Execute(); err != nil {
-		t.Fatalf("clean should continue after remove failure: %v\nOutput: %s", err, buf.String())
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected clean partial failure\nOutput: %s", buf.String())
+	} else if !ErrorAlreadyReported(err) {
+		t.Fatalf("expected already-reported error, got: %v", err)
+	}
+	if !strings.Contains(buf.String(), `"code": "clean_partial_failure"`) {
+		t.Fatalf("partial JSON result missing structured error: %s", buf.String())
 	}
 	for _, command := range runner.commands {
 		if len(command) > 0 && (command[0] == "kill-window" || command[0] == "kill-session") {
@@ -658,10 +666,14 @@ tmux:
 	mockTerminal(t)
 	mockWorkingDir(t, repoDir)
 
+	labelPath, err := filepath.EvalSymlinks(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := &recordingTmuxRunner{
 		outputs: map[string]string{
 			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
-			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@8\tdev\trenamed\t" + repoDir + "\tfeat/clean-labeled\t" + wtPath + "\tcanonical",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@8\tdev\trenamed\t" + repoDir + "\tfeat/clean-labeled\t" + labelPath + "\tcanonical",
 		},
 	}
 	origFactory := tmuxRunnerFactory

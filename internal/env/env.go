@@ -76,12 +76,18 @@ func ParseEnvContent(content string) (map[string]string, error) {
 			continue
 		}
 
-		// Handle quoted values — preserve content inside quotes verbatim.
-		// For unquoted values, strip inline comments (e.g., "value # comment").
+		// Handle quoted values. For unquoted values, strip inline comments
+		// (e.g., "value # comment").
 		quoted := false
 		if len(value) >= 2 {
-			if (value[0] == '"' && value[len(value)-1] == '"') ||
-				(value[0] == '\'' && value[len(value)-1] == '\'') {
+			if value[0] == '"' && value[len(value)-1] == '"' {
+				unquoted, err := unquoteDoubleEnv(value[1 : len(value)-1])
+				if err != nil {
+					return nil, fmt.Errorf("parsing %s: %w", key, err)
+				}
+				value = unquoted
+				quoted = true
+			} else if value[0] == '\'' && value[len(value)-1] == '\'' {
 				value = value[1 : len(value)-1]
 				quoted = true
 			}
@@ -447,11 +453,21 @@ var (
 	errOptionalSourceMissing = errors.New("optional canonical source missing")
 )
 
+// PreflightEnvLocals validates every generated-local destination without
+// mutating the filesystem.
+func PreflightEnvLocals(mappings []EnvLocalMapping, worktreePath string) error {
+	return writeEnvLocals(mappings, worktreePath, false)
+}
+
 // WriteEnvLocals writes .env.local files into the worktree. It only creates or
 // replaces Grove-generated regular files with the exact generated marker;
 // user-owned regular files, symlinks, and unusual filesystem objects are
 // preserved and reported as collisions.
 func WriteEnvLocals(mappings []EnvLocalMapping, worktreePath string) error {
+	return writeEnvLocals(mappings, worktreePath, true)
+}
+
+func writeEnvLocals(mappings []EnvLocalMapping, worktreePath string, apply bool) error {
 	root, err := cleanAbsRoot(worktreePath)
 	if err != nil {
 		return fmt.Errorf("validating worktree root: %w", err)
@@ -506,6 +522,9 @@ func WriteEnvLocals(mappings []EnvLocalMapping, worktreePath string) error {
 		plans = append(plans, plan{mapping: m, path: dst, existing: existing})
 	}
 
+	if !apply {
+		return nil
+	}
 	for _, p := range plans {
 		if err := ensureSecureParent(root, filepath.Dir(p.path)); err != nil {
 			return fmt.Errorf("creating parent for %s: %w", p.mapping.RelPath, err)
@@ -518,12 +537,22 @@ func WriteEnvLocals(mappings []EnvLocalMapping, worktreePath string) error {
 	return nil
 }
 
+// PreflightEnvFiles validates every configured source and destination without
+// mutating the filesystem.
+func PreflightEnvFiles(envFiles []string, projectRoot, worktreePath string) error {
+	return symlinkEnvFiles(envFiles, projectRoot, worktreePath, false)
+}
+
 // SymlinkEnvFiles creates relative symlinks from the main repo's env files into
 // the worktree. A genuinely missing configured canonical source is optional and
 // skipped, and any existing destination for that missing mapping is untouched.
 // All mappings are preflighted before mutation; invalid paths, invalid sources,
 // and destination collisions fail without changing any mapping.
 func SymlinkEnvFiles(envFiles []string, projectRoot, worktreePath string) error {
+	return symlinkEnvFiles(envFiles, projectRoot, worktreePath, true)
+}
+
+func symlinkEnvFiles(envFiles []string, projectRoot, worktreePath string, apply bool) error {
 	project, err := cleanAbsRoot(projectRoot)
 	if err != nil {
 		return fmt.Errorf("validating project root: %w", err)
@@ -614,6 +643,9 @@ func SymlinkEnvFiles(envFiles []string, projectRoot, worktreePath string) error 
 		})
 	}
 
+	if !apply {
+		return nil
+	}
 	for _, p := range plans {
 		if !p.apply {
 			continue
@@ -907,9 +939,57 @@ func renderEnvLocal(vars map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString(generatedEnvLocalMarker)
 	for _, k := range keys {
-		sb.WriteString(k + "=" + vars[k] + "\n")
+		sb.WriteString(k + "=" + quoteEnvValue(vars[k]) + "\n")
 	}
 	return sb.String()
+}
+
+func quoteEnvValue(value string) string {
+	safe := value != ""
+	for _, r := range value {
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || strings.ContainsRune("_./:@+-", r)) {
+			safe = false
+			break
+		}
+	}
+	if safe {
+		return value
+	}
+
+	var sb strings.Builder
+	sb.WriteByte('"')
+	for _, r := range value {
+		switch r {
+		case '\\', '"', '$', '`':
+			sb.WriteByte('\\')
+		}
+		sb.WriteRune(r)
+	}
+	sb.WriteByte('"')
+	return sb.String()
+}
+
+func unquoteDoubleEnv(value string) (string, error) {
+	var sb strings.Builder
+	for i := 0; i < len(value); i++ {
+		if value[i] != '\\' {
+			sb.WriteByte(value[i])
+			continue
+		}
+		i++
+		if i >= len(value) {
+			return "", fmt.Errorf("trailing escape")
+		}
+		switch value[i] {
+		case '\\', '"', '$', '`':
+			sb.WriteByte(value[i])
+		default:
+			sb.WriteByte('\\')
+			sb.WriteByte(value[i])
+		}
+	}
+	return sb.String(), nil
 }
 
 func hasGeneratedMarker(path string, expected os.FileInfo) (bool, error) {

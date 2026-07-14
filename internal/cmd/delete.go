@@ -8,12 +8,26 @@ import (
 
 	"github.com/lukemelnik/grove/internal/config"
 	"github.com/lukemelnik/grove/internal/hooks"
-	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/tmux"
 	"github.com/lukemelnik/grove/internal/worktree"
 
 	"github.com/spf13/cobra"
 )
+
+type deleteFailure struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+}
+
+type deleteOutput struct {
+	Branch        string           `json:"branch"`
+	Worktree      string           `json:"worktree"`
+	DeletedBranch bool             `json:"deleted_branch"`
+	KeptBranch    bool             `json:"kept_branch"`
+	BranchReason  string           `json:"branch_reason,omitempty"`
+	Failures      []deleteFailure  `json:"failures,omitempty"`
+	Error         *structuredError `json:"error,omitempty"`
+}
 
 func newDeleteCmd() *cobra.Command {
 	cmd := &cobra.Command{
@@ -38,6 +52,8 @@ Smart merge detection:
 
 	cmd.Flags().Bool("force", false, "skip safety checks (open PRs, unpushed commits) and force-remove dirty worktrees")
 	cmd.Flags().Bool("keep-branch", false, "remove worktree but keep the git branch")
+	cmd.Flags().Bool("dry-run", false, "show what would be deleted without mutating anything")
+	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 
 	return cmd
 }
@@ -60,94 +76,36 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	force, _ := cmd.Flags().GetBool("force")
 	keepBranch, _ := cmd.Flags().GetBool("keep-branch")
+	dryRun, _ := cmd.Flags().GetBool("dry-run")
+	jsonOutput := shouldOutputJSON(cmd)
 
 	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
 	if err != nil {
-		return fmt.Errorf("getting working directory: %w", err)
+		return outputError(cmd, newCodedError("project_discovery_failed", fmt.Errorf("getting working directory: %w", err)))
 	}
 
 	configPath, projectRoot, err := config.Discover(cwd)
 	if err != nil {
-		return err
+		return outputError(cmd, newCodedError("project_discovery_failed", err))
 	}
 
 	cfg, err := config.LoadNoValidate(configPath)
 	if err != nil {
-		return err
+		return outputError(cmd, newCodedError("config_invalid", err))
+	}
+	if err := config.ValidateHooks(cfg.Hooks); err != nil {
+		return outputError(cmd, newCodedError("delete_hook_invalid", err))
 	}
 
-	// Step 2: Check for open PRs (unless --force)
-	if !force {
-		if ghAvailable() {
-			hasOpenPR, prNum, err := checkOpenPRs(branch)
-			if err != nil {
-				// Non-fatal — just warn and continue
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not check for open PRs: %v\n", err)
-			} else if hasOpenPR {
-				return fmt.Errorf("branch %q has an open PR (#%s) — use --force to delete anyway", branch, prNum)
-			}
-		} else {
-			fmt.Fprintln(cmd.ErrOrStderr(), "Note: skipping PR check — gh not found")
-		}
-	}
-
-	// Step 3: Check for unpushed commits (unless --force)
+	// Step 2: Set up read-only worktree discovery for planning.
 	git := worktree.NewGitRunner(projectRoot)
 	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
-
-	if !force {
-		status, count, err := wtMgr.CheckUnpushed(branch)
-		if err != nil {
-			return fmt.Errorf("could not check for unpushed commits on branch %q — use --force to delete anyway: %w", branch, err)
-		}
-		switch status {
-		case worktree.UnpushedNoRemote:
-			return fmt.Errorf("branch %q has never been pushed to a remote — use --force to delete anyway, or push first with: git push -u origin %s", branch, branch)
-		case worktree.UnpushedGone:
-			defaultBranch := wtMgr.DefaultBranch()
-			hasUnique, uniqueErr := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
-			if uniqueErr != nil {
-				return fmt.Errorf("could not check whether branch %q has unique commits — use --force to delete anyway: %w", branch, uniqueErr)
-			}
-			if !hasUnique {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch has no unique commits\n")
-				break
-			}
-			contentMerged, cherryErr := wtMgr.IsBranchContentMerged(branch, defaultBranch)
-			if cherryErr != nil {
-				return fmt.Errorf("could not verify whether branch %q content is merged into %s — use --force to delete anyway: %w", branch, defaultBranch, cherryErr)
-			}
-			if !contentMerged {
-				return fmt.Errorf("branch %q has unique local commits and its deleted remote is not proof of merge — use --force to delete anyway, or preserve/push the commits first", branch)
-			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch content already in %s\n", defaultBranch)
-		case worktree.UnpushedCommits:
-			// Before blocking, check if the branch content is already in the
-			// default branch (handles rebase merges where commit SHAs differ
-			// but the patches are identical).
-			defaultBranch := wtMgr.DefaultBranch()
-			contentMerged, cherryErr := wtMgr.IsBranchContentMerged(branch, defaultBranch)
-			if cherryErr != nil {
-				return fmt.Errorf("could not verify whether branch %q content is merged into %s — use --force to delete anyway: %w", branch, defaultBranch, cherryErr)
-			}
-			if contentMerged {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Note: branch content already in %s (merged via rebase)\n", defaultBranch)
-			} else {
-				noun := "commit"
-				if count > 1 {
-					noun = "commits"
-				}
-				return fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)
-			}
-		}
+	commonStateDir, err := wtMgr.CommonStateDir()
+	if err != nil {
+		return outputError(cmd, newCodedError("git_common_dir_failed", err))
 	}
-
-	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
-		if err := config.ValidateHookScripts("pre_delete", cfg.Hooks.PreDelete); err != nil {
-			return err
-		}
-	}
+	ctx := &projectContext{ConfigPath: configPath, ProjectRoot: projectRoot, CommonStateDir: commonStateDir, Config: cfg, Worktrees: wtMgr}
 
 	wtPath := worktree.WorktreePath(projectRoot, cfg.WorktreeDir, branch)
 	if worktrees, listErr := wtMgr.List(); listErr == nil {
@@ -158,89 +116,191 @@ func runDelete(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}
+	deleteBranch := !keepBranch
+	if dryRun {
+		plan := struct {
+			Branch             string `json:"branch"`
+			Worktree           string `json:"worktree"`
+			WouldDeleteBranch  bool   `json:"would_delete_branch"`
+			WouldDestroyTmux   bool   `json:"would_destroy_tmux"`
+			TmuxDestroyMatcher string `json:"tmux_destroy_matcher"`
+		}{Branch: branch, Worktree: wtPath, WouldDeleteBranch: deleteBranch, WouldDestroyTmux: true, TmuxDestroyMatcher: "labeled"}
+		if jsonOutput {
+			data, _ := json.MarshalIndent(plan, "", "  ")
+			fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return nil
+		}
+		fmt.Fprintf(cmd.OutOrStdout(), "Would delete worktree for branch %q\n", branch)
+		fmt.Fprintf(cmd.OutOrStdout(), "Worktree: %s\n", wtPath)
+		fmt.Fprintf(cmd.OutOrStdout(), "Would delete branch: %t\n", deleteBranch)
+		fmt.Fprintln(cmd.OutOrStdout(), "Would destroy tmux: labeled target for exact worktree")
+		return nil
+	}
 
-	// Step 4: Run pre-delete hooks before any destructive cleanup.
-	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
-		preDeletePorts := map[string]int{}
-		if len(cfg.Services) > 0 {
-			assignment, assignErr := ports.Assign(cfg.Services, branch, ports.DefaultMaxOffset, wtMgr.DefaultBranch())
-			if assignErr != nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not assign hook ports: %v\n", assignErr)
-			} else {
-				preDeletePorts = assignment.Ports
+	// Step 3: Run remote and unpushed safety checks only for a real deletion.
+	if !force {
+		if ghAvailable() {
+			hasOpenPR, prNum, checkErr := checkOpenPRs(branch)
+			if checkErr != nil {
+				return outputError(cmd, newCodedError("delete_pr_check_failed", fmt.Errorf("could not check for open PRs — use --force to delete anyway: %w", checkErr)))
+			} else if hasOpenPR {
+				return outputError(cmd, newCodedError("delete_blocked_open_pr", fmt.Errorf("branch %q has an open PR (#%s) — use --force to delete anyway", branch, prNum)))
 			}
+		} else {
+			fmt.Fprintln(cmd.ErrOrStderr(), "Note: skipping PR check — gh not found")
+		}
+
+		status, count, err := wtMgr.CheckUnpushed(branch)
+		if err != nil {
+			return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not check for unpushed commits on branch %q — use --force to delete anyway: %w", branch, err)))
+		}
+		switch status {
+		case worktree.UnpushedNoRemote:
+			return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has never been pushed to a remote — use --force to delete anyway, or push first with: git push -u origin %s", branch, branch)))
+		case worktree.UnpushedGone:
+			defaultBranch := wtMgr.DefaultBranch()
+			hasUnique, uniqueErr := wtMgr.BranchHasUniqueCommits(branch, defaultBranch)
+			if uniqueErr != nil {
+				return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not check whether branch %q has unique commits — use --force to delete anyway: %w", branch, uniqueErr)))
+			}
+			if !hasUnique {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch has no unique commits\n")
+				break
+			}
+			contentMerged, cherryErr := wtMgr.IsBranchContentMerged(branch, defaultBranch)
+			if cherryErr != nil {
+				return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not verify whether branch %q content is merged into %s — use --force to delete anyway: %w", branch, defaultBranch, cherryErr)))
+			}
+			if !contentMerged {
+				return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has unique local commits and its deleted remote is not proof of merge — use --force to delete anyway, or preserve/push the commits first", branch)))
+			}
+			fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch content already in %s\n", defaultBranch)
+		case worktree.UnpushedCommits:
+			// Before blocking, check if the branch content is already in the
+			// default branch (handles rebase merges where commit SHAs differ
+			// but the patches are identical).
+			defaultBranch := wtMgr.DefaultBranch()
+			contentMerged, cherryErr := wtMgr.IsBranchContentMerged(branch, defaultBranch)
+			if cherryErr != nil {
+				return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not verify whether branch %q content is merged into %s — use --force to delete anyway: %w", branch, defaultBranch, cherryErr)))
+			}
+			if contentMerged {
+				fmt.Fprintf(cmd.ErrOrStderr(), "Note: branch content already in %s (merged via rebase)\n", defaultBranch)
+			} else {
+				noun := "commit"
+				if count > 1 {
+					noun = "commits"
+				}
+				return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)))
+			}
+		}
+	}
+
+	// Step 4: Serialize persistent assignment, hooks, and destructive cleanup.
+	lock, err := acquireWorkflowLock(cmd.Context(), ctx)
+	if err != nil {
+		return outputError(cmd, err)
+	}
+	current, currentErr := findWorktreeByBranch(ctx, branch)
+	if currentErr != nil {
+		cleanupErr := reconcilePortRegistry(ctx)
+		releaseErr := lock.Release()
+		return outputError(cmd, newCodedError("worktree_not_found", combineCleanupErrors(currentErr, cleanupErr, releaseErr)))
+	}
+	wtPath = current.Path
+	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
+		assignment, assignErr := assignPersistentPorts(ctx, branch)
+		if assignErr != nil {
+			_ = lock.Release()
+			return outputError(cmd, newCodedError("delete_port_assignment_failed", assignErr))
 		}
 		hookOpts := hooks.RunOpts{
-			Branch:       branch,
-			WorktreePath: wtPath,
-			ProjectRoot:  projectRoot,
-			Ports:        preDeletePorts,
-			Stdout:       cmd.OutOrStdout(),
-			Stderr:       cmd.ErrOrStderr(),
+			Branch:         branch,
+			WorktreePath:   wtPath,
+			ProjectRoot:    projectRoot,
+			Ports:          assignment.Ports,
+			Stdout:         cmd.OutOrStdout(),
+			Stderr:         cmd.ErrOrStderr(),
+			EnvPassthrough: cfg.Hooks.EnvPassthrough,
+			OutputMode:     configuredHookOutputMode(cfg.Hooks),
+			Context:        cmd.Context(),
+			Timeout:        cfg.Hooks.Timeout,
 		}
-		if err := hooks.RunPreDelete(cfg.Hooks.PreDelete, hookOpts); err != nil {
-			return fmt.Errorf("pre-delete hook failed: %w", err)
-		}
-	}
-
-	// Step 5: Remove git worktree and optionally delete branch
-	deleteBranch := !keepBranch
-	result, err := wtMgr.Remove(branch, deleteBranch, force)
-	if err != nil {
-		return fmt.Errorf("removing worktree: %w", err)
-	}
-
-	// Step 6: Remove tmux targets after the worktree was removed. Prefer Grove
-	// labels so renamed windows are cleaned up, then fall back to legacy name lookup.
-	tmuxCfg := cfg.Tmux
-	if tmuxCfg == nil {
-		tmuxCfg = &config.TmuxConfig{}
-	}
-	{
-		tmuxRunner := tmuxRunnerFactory()
-		tmuxMgr := tmux.NewManager(tmuxRunner)
-
-		// The worktree path may no longer resolve after removal, so match labels
-		// by the still-existing project root and branch.
-		killedLabeled, killErr := tmuxMgr.DestroyLabeled(projectRoot, branch, "")
-		if killErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill labeled tmux target: %v\n", killErr)
-		}
-		if !killedLabeled {
-			mode := tmuxCfg.Mode
-			if mode == "" {
-				mode = "window"
-			}
-			name := tmuxMgr.ResolveName(branch, mode)
-
-			// Try to kill — ignore errors (session/window may not be running)
-			switch mode {
-			case "session":
-				if tmuxMgr.HasSession(name) {
-					if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux session: %v\n", err)
-					}
-				}
-			case "window":
-				if tmuxMgr.HasWindow(name) {
-					if err := tmuxMgr.Destroy(branch, tmuxCfg); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "Warning: could not kill tmux window: %v\n", err)
-					}
-				}
-			}
+		if hookErr := hooks.RunPreDelete(cfg.Hooks.PreDelete, hookOpts); hookErr != nil {
+			releaseErr := lock.Release()
+			return outputError(cmd, newCodedError("delete_hook_failed", combineCleanupErrors(fmt.Errorf("pre-delete hook failed: %w", hookErr), releaseErr)))
 		}
 	}
 
-	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "Deleted worktree for branch %q\n", branch)
-	if !deleteBranch {
-		fmt.Fprintf(w, "Kept branch %q\n", branch)
-	} else if result.BranchDeleted {
-		fmt.Fprintf(w, "Deleted branch %q\n", branch)
-	} else if result.BranchSkipReason != "" {
-		fmt.Fprintf(w, "Kept branch %q (%s)\n", branch, result.BranchSkipReason)
+	// Discover exact Grove-owned tmux IDs while the worktree path still exists,
+	// so path aliases remain comparable after Git removes the directory.
+	tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
+	tmuxTargets, tmuxDiscoveryErr := tmuxMgr.FindTargets(projectRoot, branch, wtPath)
+	if tmuxDiscoveryErr != nil {
+		releaseErr := lock.Release()
+		return outputError(cmd, newCodedError("delete_tmux_discovery_failed", combineCleanupErrors(tmuxDiscoveryErr, releaseErr)))
 	}
 
+	// Step 5: Remove git worktree and optionally delete branch.
+	result, removeErr := wtMgr.Remove(branch, deleteBranch, force)
+	if removeErr != nil && (result == nil || !result.WorktreeRemoved) {
+		releaseErr := lock.Release()
+		return outputError(cmd, newCodedError("delete_worktree_failed", combineCleanupErrors(fmt.Errorf("removing worktree: %w", removeErr), releaseErr)))
+	}
+
+	var failures []deleteFailure
+	if result != nil && result.WorktreeRemoved {
+		if registryErr := reconcilePortRegistry(ctx); registryErr != nil {
+			failures = append(failures, deleteFailure{Stage: "registry", Message: registryErr.Error()})
+		}
+	}
+	if releaseErr := lock.Release(); releaseErr != nil {
+		failures = append(failures, deleteFailure{Stage: "lock", Message: releaseErr.Error()})
+	}
+
+	// Step 6: Remove only the exact IDs proven Grove-owned before deletion.
+	if result != nil && result.WorktreeRemoved {
+		if _, killErr := tmuxMgr.DestroyTargets(tmuxTargets); killErr != nil {
+			failures = append(failures, deleteFailure{Stage: "tmux", Message: killErr.Error()})
+		}
+	}
+	if removeErr != nil {
+		failures = append(failures, deleteFailure{Stage: "branch", Message: removeErr.Error()})
+	}
+
+	out := deleteOutput{
+		Branch:        branch,
+		Worktree:      wtPath,
+		DeletedBranch: deleteBranch && result != nil && result.BranchDeleted,
+		KeptBranch:    !deleteBranch || (deleteBranch && result != nil && !result.BranchDeleted),
+		Failures:      failures,
+	}
+	if result != nil {
+		out.BranchReason = result.BranchSkipReason
+	}
+	if len(failures) > 0 {
+		out.Error = &structuredError{Code: "delete_partial_failure", Message: fmt.Sprintf("delete completed with %d failure(s)", len(failures))}
+	}
+	if jsonOutput {
+		data, _ := json.MarshalIndent(out, "", "  ")
+		fmt.Fprintln(cmd.OutOrStdout(), string(data))
+	} else {
+		w := cmd.OutOrStdout()
+		fmt.Fprintf(w, "Deleted worktree for branch %q\n", branch)
+		if !deleteBranch {
+			fmt.Fprintf(w, "Kept branch %q\n", branch)
+		} else if result != nil && result.BranchDeleted {
+			fmt.Fprintf(w, "Deleted branch %q\n", branch)
+		} else if result != nil && result.BranchSkipReason != "" {
+			fmt.Fprintf(w, "Kept branch %q (%s)\n", branch, result.BranchSkipReason)
+		}
+		for _, failure := range failures {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Delete partial failure (%s): %s\n", failure.Stage, failure.Message)
+		}
+	}
+	if len(failures) > 0 {
+		return &reportedError{cause: newCodedError("delete_partial_failure", fmt.Errorf("delete completed with %d failure(s)", len(failures)))}
+	}
 	return nil
 }
 

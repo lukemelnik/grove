@@ -5,10 +5,6 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/lukemelnik/grove/internal/config"
-	"github.com/lukemelnik/grove/internal/ports"
-	"github.com/lukemelnik/grove/internal/worktree"
-
 	"github.com/spf13/cobra"
 )
 
@@ -36,43 +32,24 @@ func newStatusCmd() *cobra.Command {
 func runStatus(cmd *cobra.Command, args []string) error {
 	jsonOutput := shouldOutputJSON(cmd)
 
-	// Step 1: Discover and load config
 	cwd, err := getWorkingDir()
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
 	}
-
-	configPath, projectRoot, err := config.Discover(cwd)
+	ctx, err := loadProjectContext()
 	if err != nil {
 		return outputError(cmd, err)
 	}
-
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return outputError(cmd, err)
-	}
-
-	// Step 2: Detect current worktree from cwd
-	git := worktree.NewGitRunner(projectRoot)
-	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
-
-	wtInfo, err := wtMgr.FindByPath(cwd)
+	wtInfo, err := ctx.Worktrees.FindByPath(cwd)
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("not inside a grove worktree: %w", err))
 	}
 
-	// Step 3: Compute ports for this branch
-	defaultBranch := wtMgr.DefaultBranch()
-	var assignedPorts map[string]int
-	if len(cfg.Services) > 0 {
-		assignment, err := ports.Assign(cfg.Services, wtInfo.Branch, ports.DefaultMaxOffset, defaultBranch)
-		if err != nil {
-			return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
-		}
-		assignedPorts = assignment.Ports
-	} else {
-		assignedPorts = map[string]int{}
+	assignment, err := readPortAssignment(ctx, wtInfo.Branch)
+	if err != nil {
+		return outputError(cmd, fmt.Errorf("assigning ports: %w", err))
 	}
+	assignedPorts := assignment.Ports
 
 	// Step 4: Output
 	if jsonOutput {

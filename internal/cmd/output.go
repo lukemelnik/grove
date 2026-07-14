@@ -26,6 +26,27 @@ func shouldOutputJSON(cmd *cobra.Command) bool {
 	return !isTerminal(int(os.Stdout.Fd()))
 }
 
+type structuredError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type codedError struct {
+	code  string
+	cause error
+}
+
+func (e *codedError) Error() string { return e.cause.Error() }
+func (e *codedError) Unwrap() error { return e.cause }
+func (e *codedError) Code() string  { return e.code }
+
+func newCodedError(code string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &codedError{code: code, cause: err}
+}
+
 type reportedError struct {
 	cause error
 }
@@ -50,11 +71,22 @@ func ErrorAlreadyReported(err error) bool {
 func outputError(cmd *cobra.Command, err error) error {
 	if shouldOutputJSON(cmd) {
 		msg := struct {
-			Error string `json:"error"`
-		}{Error: err.Error()}
+			Error structuredError `json:"error"`
+		}{}
+		msg.Error.Code = errorCode(err)
+		msg.Error.Message = err.Error()
 		data, _ := json.Marshal(msg)
 		fmt.Fprintln(cmd.ErrOrStderr(), string(data))
 		return &reportedError{cause: err}
 	}
 	return err
+}
+
+func errorCode(err error) string {
+	type codeCarrier interface{ Code() string }
+	var coded codeCarrier
+	if errors.As(err, &coded) && coded.Code() != "" {
+		return coded.Code()
+	}
+	return "command_failed"
 }

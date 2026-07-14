@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -40,6 +41,12 @@ func (m *mockRunner) Run(args ...string) (string, error) {
 	// Special handling: display-message for session name queries
 	if len(args) >= 3 && args[0] == "display-message" && args[1] == "-p" {
 		return "my-session", nil
+	}
+	if len(args) >= 3 && args[0] == "new-window" && args[1] == "-P" {
+		return "@mock-window", nil
+	}
+	if len(args) > 0 && args[0] == "has-session" {
+		return "", errors.New("session not found")
 	}
 
 	return "", nil
@@ -1113,40 +1120,6 @@ func TestCreate_SinglePane(t *testing.T) {
 	}
 }
 
-func TestDestroy_Session(t *testing.T) {
-	runner := newMockRunner()
-	mgr := NewManager(runner)
-	name := SessionName("feat/auth")
-
-	cfg := &config.TmuxConfig{Mode: "session"}
-	err := mgr.Destroy("feat/auth", cfg)
-	if err != nil {
-		t.Fatalf("Destroy failed: %v", err)
-	}
-
-	idx := runner.findCommand("kill-session", "-t", name)
-	if idx < 0 {
-		t.Errorf("expected kill-session:\n%s", runner.commandString())
-	}
-}
-
-func TestDestroy_Window(t *testing.T) {
-	runner := newMockRunner()
-	mgr := NewManager(runner)
-	name := SessionName("feat/auth")
-
-	cfg := &config.TmuxConfig{Mode: "window"}
-	err := mgr.Destroy("feat/auth", cfg)
-	if err != nil {
-		t.Fatalf("Destroy failed: %v", err)
-	}
-
-	idx := runner.findCommand("kill-window", "-t", name)
-	if idx < 0 {
-		t.Errorf("expected kill-window:\n%s", runner.commandString())
-	}
-}
-
 func TestCreate_FullCommandSequence_Session(t *testing.T) {
 	// This test verifies the exact command sequence for session mode
 	runner := newMockRunner()
@@ -1189,7 +1162,9 @@ func TestCreate_FullCommandSequence_Session(t *testing.T) {
 	expected := []struct {
 		prefix []string
 	}{
-		// 1. Create session (no -e flags)
+		// 1. Fail closed before creating a session with an existing unlabeled name
+		{[]string{"has-session", "-t", name}},
+		// 2. Create session (no -e flags)
 		{[]string{"new-session", "-d", "-s", name, "-c", "/path/to/worktree"}},
 		// 2. Label the Grove target
 		{[]string{"set", "-t", name, "@grove.project_root", ""}},
@@ -1502,6 +1477,7 @@ func TestSendPaneCommands_Setup(t *testing.T) {
 func TestHasSession(t *testing.T) {
 	t.Run("session exists", func(t *testing.T) {
 		runner := newMockRunner()
+		runner.outputs["has-session -t test-session"] = ""
 		mgr := NewManager(runner)
 
 		got := mgr.HasSession("test-session")
@@ -1522,14 +1498,12 @@ func TestHasSession(t *testing.T) {
 	})
 }
 
-func TestCreateWindow_DoesNotReuseSameNameFromAnotherSession(t *testing.T) {
+func TestCreateWindow_DoesNotAdoptSameNameFromAnySession(t *testing.T) {
 	runner := newMockRunner()
-	runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},shared-name}"] = "shared-name"
-	runner.outputs["list-windows -t current -F #{window_name} -f #{==:#{window_name},shared-name}"] = ""
 	runner.outputs["new-window -P -F #{window_id} -t current -n shared-name -c /worktree"] = "@42"
 	mgr := NewManager(runner)
 
-	target, err := mgr.createWindow("current", "shared-name", "/worktree", false)
+	target, err := mgr.createWindow("current", "shared-name", "/worktree")
 	if err != nil {
 		t.Fatalf("createWindow failed: %v", err)
 	}
@@ -1539,63 +1513,9 @@ func TestCreateWindow_DoesNotReuseSameNameFromAnotherSession(t *testing.T) {
 	if runner.findCommand("new-window", "-P", "-F", "#{window_id}", "-t", "current") < 0 {
 		t.Fatalf("expected a new window in current session, got:\n%s", runner.commandString())
 	}
-	if runner.findCommand("list-windows", "-a") >= 0 {
-		t.Fatalf("createWindow used global window lookup: %s", runner.commandString())
+	if runner.findCommand("list-windows") >= 0 {
+		t.Fatalf("createWindow must not inspect/adopt existing windows: %s", runner.commandString())
 	}
-}
-
-func TestCreateWindow_ReusesSameNameOnlyInRequestedSession(t *testing.T) {
-	runner := newMockRunner()
-	runner.outputs["list-windows -t current -F #{window_name} -f #{==:#{window_name},shared-name}"] = "shared-name"
-	mgr := NewManager(runner)
-
-	target, err := mgr.createWindow("current", "shared-name", "/worktree", false)
-	if err != nil {
-		t.Fatalf("createWindow failed: %v", err)
-	}
-	if target != "current:shared-name" {
-		t.Fatalf("target = %q, want unambiguous current-session target", target)
-	}
-	if runner.findCommand("new-window") >= 0 {
-		t.Fatalf("unexpected new window: %s", runner.commandString())
-	}
-}
-
-func TestHasWindow(t *testing.T) {
-	t.Run("window exists", func(t *testing.T) {
-		runner := newMockRunner()
-		// HasWindow now checks for non-empty output, so mock must return the window name.
-		runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},test-window}"] = "test-window"
-		mgr := NewManager(runner)
-
-		got := mgr.HasWindow("test-window")
-		if !got {
-			t.Error("expected HasWindow to return true when window exists")
-		}
-	})
-
-	t.Run("window does not exist (error)", func(t *testing.T) {
-		runner := newMockRunner()
-		runner.errors["list-windows -a -F #{window_name} -f #{==:#{window_name},missing-window}"] = fmt.Errorf("no windows found")
-		mgr := NewManager(runner)
-
-		got := mgr.HasWindow("missing-window")
-		if got {
-			t.Error("expected HasWindow to return false when error")
-		}
-	})
-
-	t.Run("window does not exist (empty output)", func(t *testing.T) {
-		runner := newMockRunner()
-		// Command succeeds but returns empty output (no matching windows).
-		runner.outputs["list-windows -a -F #{window_name} -f #{==:#{window_name},absent-window}"] = ""
-		mgr := NewManager(runner)
-
-		got := mgr.HasWindow("absent-window")
-		if got {
-			t.Error("expected HasWindow to return false when output is empty")
-		}
-	})
 }
 
 func TestAttach_OutsideTmux_Session(t *testing.T) {
@@ -1757,12 +1677,35 @@ func TestFindCanonicalUsesLabelsAndProjectRoot(t *testing.T) {
 	}, "\n")
 	mgr := NewManager(runner)
 
-	target, ok := mgr.FindCanonical("/repo-b", "feat/shared", "/repo-b-wt", "window")
+	target, ok, err := mgr.FindCanonical("/repo-b", "feat/shared", "/repo-b-wt", "window")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !ok {
 		t.Fatal("expected canonical target")
 	}
 	if target.Target != "@2" || target.Name != "renamed-again" || target.Session != "dev" {
 		t.Fatalf("unexpected target: %+v", target)
+	}
+}
+
+func TestFindCanonicalFailsClosedOnUnexpectedDiscoveryError(t *testing.T) {
+	runner := newMockRunner()
+	command := "list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
+	runner.errors[command] = errors.New("permission denied")
+	mgr := NewManager(runner)
+	if _, _, err := mgr.FindCanonical("/repo", "feat/x", "/wt", "window"); err == nil {
+		t.Fatal("expected unexpected discovery error")
+	}
+}
+
+func TestFindCanonicalTreatsNoTmuxServerAsNoTarget(t *testing.T) {
+	runner := newMockRunner()
+	command := "list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
+	runner.errors[command] = errors.New("no server running on /tmp/tmux.sock")
+	mgr := NewManager(runner)
+	if _, ok, err := mgr.FindCanonical("/repo", "feat/x", "/wt", "window"); err != nil || ok {
+		t.Fatalf("FindCanonical = ok %t, err %v; want no target", ok, err)
 	}
 }
 
@@ -1791,6 +1734,225 @@ func TestDestroyLabeledKillsMatchingTargets(t *testing.T) {
 	}
 	if runner.findCommand("kill-window", "-t", "@3") >= 0 {
 		t.Fatalf("should not kill labels for other branches, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_SessionModeRefusesUnlabeledExistingSession(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["has-session -t "+SessionName("feat/collision")] = ""
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/collision",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "session"},
+		Attach:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "refusing to adopt") {
+		t.Fatalf("expected fail-closed adoption error, got %v", err)
+	}
+	if runner.findCommand("new-session") >= 0 {
+		t.Fatalf("must not create after detecting existing session, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_WindowModeAlwaysCreatesExactWindowID(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := newMockRunner()
+	name := SessionName("feat/collision")
+	runner.outputs["new-window -P -F #{window_id} -t my-session -n "+name+" -c /wt"] = "@77"
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/collision",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "window"},
+		Attach:       false,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if runner.findCommand("list-windows", "-t", "my-session") >= 0 {
+		t.Fatalf("window creation must not check/adopt same-name windows, got:\n%s", runner.commandString())
+	}
+	if runner.findCommand("setw", "-t", "@77", "@grove.role", "canonical") < 0 {
+		t.Fatalf("expected exact created window id to be labeled, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_RollbacksCreatedSessionOnEnvFailure(t *testing.T) {
+	runner := newMockRunner()
+	name := SessionName("feat/rollback-session")
+	runner.errors["set-environment -t "+name+" TOKEN secret"] = errors.New("boom secret")
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/rollback-session",
+		WorktreePath: "/wt",
+		Env:          map[string]string{"TOKEN": "secret"},
+		TmuxConfig:   &config.TmuxConfig{Mode: "session"},
+		Attach:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "injecting environment") {
+		t.Fatalf("expected original env error, got %v", err)
+	}
+	if runner.findCommand("kill-session", "-t", name) < 0 {
+		t.Fatalf("expected created session rollback, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_RollbacksCreatedWindowOnPaneFailure(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := newMockRunner()
+	name := SessionName("feat/rollback-window")
+	runner.outputs["new-window -P -F #{window_id} -t my-session -n "+name+" -c /wt"] = "@88"
+	runner.errors["send-keys -t @88 nvim Enter"] = errors.New("send failed secret")
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/rollback-window",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "window", Panes: []config.Pane{{Cmd: "nvim"}}},
+		Attach:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "creating panes") {
+		t.Fatalf("expected original pane error, got %v", err)
+	}
+	if runner.findCommand("kill-window", "-t", "@88") < 0 {
+		t.Fatalf("expected created window rollback by exact id, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_RollbackReportsCleanupFailure(t *testing.T) {
+	runner := newMockRunner()
+	name := SessionName("feat/rollback-cleanup")
+	runner.errors["set -t "+name+" @grove.branch feat/rollback-cleanup"] = errors.New("label failed")
+	runner.errors["kill-session -t "+name] = errors.New("cleanup failed")
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/rollback-cleanup",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "session"},
+		Attach:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "labeling tmux target") || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatalf("expected original and rollback errors, got %v", err)
+	}
+}
+
+func TestDestroyLabeledPreservesLastWindowWithPlaceholderBeforeKill(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = ""
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = "@1\tdev\tfeat\t/repo\tfeat/last\t/wt\tcanonical"
+	runner.outputs["list-windows -t dev -F #{window_id}"] = "@1"
+	mgr := NewManager(runner)
+
+	killed, err := mgr.DestroyLabeled("/repo", "feat/last", "/wt")
+	if err != nil || !killed {
+		t.Fatalf("DestroyLabeled = %v, %v", killed, err)
+	}
+	placeholderIdx := runner.findCommand("new-window", "-d", "-t", "dev", "-n", "grove-placeholder")
+	killIdx := runner.findCommand("kill-window", "-t", "@1")
+	if placeholderIdx < 0 || killIdx < 0 || placeholderIdx > killIdx {
+		t.Fatalf("expected placeholder before exact kill, got:\n%s", runner.commandString())
+	}
+}
+
+func TestDestroyLabeledPlaceholderFailureDoesNotKillLastWindow(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = ""
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = "@1\tdev\tfeat\t/repo\tfeat/last\t/wt\tcanonical"
+	runner.outputs["list-windows -t dev -F #{window_id}"] = "@1"
+	runner.errors["new-window -d -t dev -n grove-placeholder"] = errors.New("placeholder failed")
+	mgr := NewManager(runner)
+
+	killed, err := mgr.DestroyLabeled("/repo", "feat/last", "/wt")
+	if err == nil || killed {
+		t.Fatalf("expected reported placeholder failure without successful kill, got killed=%v err=%v", killed, err)
+	}
+	if runner.findCommand("kill-window", "-t", "@1") >= 0 {
+		t.Fatalf("must not kill last Grove window when placeholder fails, got:\n%s", runner.commandString())
+	}
+}
+
+func TestDestroyLabeledWindowCountFailureDoesNotKill(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = ""
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = "@1\tdev\tfeat\t/repo\tfeat/count\t/wt\tcanonical"
+	runner.errors["list-windows -t dev -F #{window_id}"] = errors.New("count failed")
+	mgr := NewManager(runner)
+
+	killed, err := mgr.DestroyLabeled("/repo", "feat/count", "/wt")
+	if err == nil || killed {
+		t.Fatalf("expected count failure without successful kill, got killed=%v err=%v", killed, err)
+	}
+	if runner.findCommand("kill-window", "-t", "@1") >= 0 {
+		t.Fatalf("must not kill when window count cannot be queried, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_RollbacksCreatedWindowOnAttachFailure(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := newMockRunner()
+	name := SessionName("feat/attach-fail")
+	runner.outputs["new-window -P -F #{window_id} -t my-session -n "+name+" -c /wt"] = "@91"
+	runner.errors["select-window -t @91"] = errors.New("attach failed")
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/attach-fail",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "window"},
+		Attach:       true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "attaching to tmux") {
+		t.Fatalf("expected attach error, got %v", err)
+	}
+	if runner.findCommand("kill-window", "-t", "@91") < 0 {
+		t.Fatalf("expected exact created window rollback, got:\n%s", runner.commandString())
+	}
+}
+
+func TestCreate_WindowModeEmptyWindowIDFailsClosed(t *testing.T) {
+	t.Setenv("TMUX", "/tmp/tmux/default,1,0")
+	runner := newMockRunner()
+	name := SessionName("feat/no-id")
+	runner.outputs["new-window -P -F #{window_id} -t my-session -n "+name+" -c /wt"] = ""
+	mgr := NewManager(runner)
+
+	err := mgr.Create(Options{
+		ProjectRoot:  "/repo",
+		Branch:       "feat/no-id",
+		WorktreePath: "/wt",
+		TmuxConfig:   &config.TmuxConfig{Mode: "window"},
+		Attach:       false,
+	})
+	if err == nil || !strings.Contains(err.Error(), "did not return an exact window id") {
+		t.Fatalf("expected empty id error, got %v", err)
+	}
+	if runner.findCommand("kill-window") >= 0 || runner.findCommand("setw") >= 0 {
+		t.Fatalf("must not guess target or mutate without exact window id, got:\n%s", runner.commandString())
+	}
+}
+
+func TestDestroyLabeledKilledBoolRequiresSuccessfulExactKill(t *testing.T) {
+	runner := newMockRunner()
+	runner.outputs["list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = ""
+	runner.outputs["list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"] = "@1\tdev\tfeat\t/repo\tfeat/kill-fail\t/wt\tcanonical"
+	runner.outputs["list-windows -t dev -F #{window_id}"] = "@1\n@2"
+	runner.errors["kill-window -t @1"] = errors.New("kill failed")
+	mgr := NewManager(runner)
+
+	killed, err := mgr.DestroyLabeled("/repo", "feat/kill-fail", "/wt")
+	if err == nil || killed {
+		t.Fatalf("expected kill failure with killed=false, got killed=%v err=%v", killed, err)
 	}
 }
 

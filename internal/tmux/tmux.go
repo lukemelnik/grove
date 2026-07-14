@@ -138,26 +138,6 @@ func SessionName(branch string) string {
 	return worktree.SanitizeBranchName(branch)
 }
 
-func legacySessionName(branch string) string {
-	sanitized := strings.ReplaceAll(branch, "/", "-")
-	if sanitized == ".." {
-		sanitized = "dotdot"
-	}
-	if sanitized == "." {
-		sanitized = "dot"
-	}
-	return sanitized
-}
-
-func sessionNameCandidates(branch string) []string {
-	canonical := SessionName(branch)
-	legacy := legacySessionName(branch)
-	if legacy == canonical {
-		return []string{canonical}
-	}
-	return []string{canonical, legacy}
-}
-
 const (
 	// RoleCanonical marks Grove's primary reopen target for a worktree.
 	RoleCanonical = "canonical"
@@ -244,26 +224,32 @@ func (m *Manager) Create(opts Options) error {
 
 	// Step 1: Create session or window
 	var target Target
+	created := false
 	switch mode {
 	case "session":
+		if m.HasSession(name) {
+			return fmt.Errorf("tmux session %q already exists without Grove ownership labels; refusing to adopt it", name)
+		}
 		if err := m.createSession(name, opts.WorktreePath); err != nil {
 			return fmt.Errorf("creating tmux session: %w", err)
 		}
+		created = true
 		target = Target{Mode: "session", Target: name, Session: name, Name: name, Role: role}
 	case "window":
 		session, err := m.currentSession()
 		if err != nil {
 			return fmt.Errorf("window mode requires running inside tmux; start tmux and rerun, or set tmux.mode=session: %w", err)
 		}
-		windowTarget, err := m.createWindow(session, name, opts.WorktreePath, opts.ForceNewWindow)
+		windowTarget, err := m.createWindow(session, name, opts.WorktreePath)
 		if err != nil {
 			return fmt.Errorf("creating tmux window: %w", err)
 		}
+		created = true
 		target = Target{Mode: "window", Target: windowTarget, Session: session, Name: name, Role: role}
 	}
 
 	if err := m.labelTarget(target, opts.ProjectRoot, opts.Branch, opts.WorktreePath, role); err != nil {
-		return fmt.Errorf("labeling tmux target: %w", err)
+		return m.rollbackCreatedTarget(target, created, fmt.Errorf("labeling tmux target: %w", err))
 	}
 
 	// Step 2: Inject managed env via set-environment (session mode only).
@@ -272,7 +258,7 @@ func (m *Manager) Create(opts Options) error {
 	// tools should read .env/.env.local files instead.
 	if mode == "session" && len(opts.Env) > 0 {
 		if err := m.injectEnv(target.Target, opts.Env); err != nil {
-			return fmt.Errorf("injecting environment: %w", err)
+			return m.rollbackCreatedTarget(target, created, fmt.Errorf("injecting environment: %w", err))
 		}
 	}
 
@@ -281,13 +267,13 @@ func (m *Manager) Create(opts Options) error {
 
 	// Step 4: Create panes
 	if err := m.createPanes(target.Target, opts.WorktreePath, panes, cfg); err != nil {
-		return fmt.Errorf("creating panes: %w", err)
+		return m.rollbackCreatedTarget(target, created, fmt.Errorf("creating panes: %w", err))
 	}
 
 	// Step 5: Attach/switch if requested
 	if opts.Attach {
 		if err := m.AttachTarget(target); err != nil {
-			return fmt.Errorf("attaching to tmux: %w", err)
+			return m.rollbackCreatedTarget(target, created, fmt.Errorf("attaching to tmux: %w", err))
 		}
 	}
 
@@ -300,56 +286,22 @@ func (m *Manager) HasSession(name string) bool {
 	return err == nil
 }
 
-// HasWindow checks if a tmux window with the given name exists.
-// It uses list-windows to search across all sessions.
-func (m *Manager) HasWindow(name string) bool {
-	out, err := m.runner.Run("list-windows", "-a", "-F", "#{window_name}", "-f", "#{==:#{window_name},"+escapeTmuxFilter(name)+"}")
-	if err != nil {
-		return false
+func (m *Manager) rollbackCreatedTarget(target Target, created bool, originalErr error) error {
+	if !created {
+		return originalErr
 	}
-	// Some tmux versions return exit 0 with empty output when no windows match.
-	return strings.TrimSpace(out) != ""
-}
 
-// Destroy kills the tmux session or window for a branch.
-func (m *Manager) Destroy(branch string, cfg *config.TmuxConfig) error {
-	mode := cfg.Mode
-	if mode == "" {
-		mode = "window"
-	}
-	name := m.ResolveName(branch, mode)
-
-	switch mode {
+	var cleanupErr error
+	switch target.Mode {
 	case "session":
-		_, err := m.runner.Run("kill-session", "-t", name)
-		if err != nil {
-			return fmt.Errorf("killing tmux session %q: %w", name, err)
-		}
+		_, cleanupErr = m.runner.Run("kill-session", "-t", target.Target)
 	case "window":
-		_, err := m.runner.Run("kill-window", "-t", name)
-		if err != nil {
-			return fmt.Errorf("killing tmux window %q: %w", name, err)
-		}
+		cleanupErr = m.killWindowPreservingSession(target)
 	}
-	return nil
-}
-
-// ResolveName returns the active tmux target name for a branch, falling back to
-// the legacy slash-to-dash mapping for existing sessions/windows.
-func (m *Manager) ResolveName(branch, mode string) string {
-	for _, candidate := range sessionNameCandidates(branch) {
-		switch mode {
-		case "session":
-			if m.HasSession(candidate) {
-				return candidate
-			}
-		default:
-			if m.HasWindow(candidate) {
-				return candidate
-			}
-		}
+	if cleanupErr != nil {
+		return fmt.Errorf("%w; rollback failed: %w", originalErr, cleanupErr)
 	}
-	return SessionName(branch)
+	return originalErr
 }
 
 func (m *Manager) labelTarget(target Target, projectRoot, branch, worktreePath, role string) error {
@@ -378,31 +330,43 @@ func (m *Manager) labelTarget(target Target, projectRoot, branch, worktreePath, 
 }
 
 // FindCanonical finds Grove's labeled canonical target for a worktree.
-func (m *Manager) FindCanonical(projectRoot, branch, worktreePath, mode string) (Target, bool) {
-	for _, target := range m.FindTargets(projectRoot, branch, worktreePath) {
+func (m *Manager) FindCanonical(projectRoot, branch, worktreePath, mode string) (Target, bool, error) {
+	targets, err := m.FindTargets(projectRoot, branch, worktreePath)
+	if err != nil {
+		return Target{}, false, err
+	}
+	for _, target := range targets {
 		if mode != "" && target.Mode != mode {
 			continue
 		}
 		if target.Role == RoleCanonical {
-			return target, true
+			return target, true, nil
 		}
 	}
-	return Target{}, false
+	return Target{}, false, nil
 }
 
 // FindTargets returns all Grove-labeled tmux targets for a worktree.
-func (m *Manager) FindTargets(projectRoot, branch, worktreePath string) []Target {
-	var targets []Target
-	targets = append(targets, m.findSessionTargets(projectRoot, branch, worktreePath)...)
-	targets = append(targets, m.findWindowTargets(projectRoot, branch, worktreePath)...)
-	return targets
+func (m *Manager) FindTargets(projectRoot, branch, worktreePath string) ([]Target, error) {
+	sessions, err := m.findSessionTargets(projectRoot, branch, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	windows, err := m.findWindowTargets(projectRoot, branch, worktreePath)
+	if err != nil {
+		return nil, err
+	}
+	return append(sessions, windows...), nil
 }
 
-func (m *Manager) findSessionTargets(projectRoot, branch, worktreePath string) []Target {
+func (m *Manager) findSessionTargets(projectRoot, branch, worktreePath string) ([]Target, error) {
 	format := "#{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
 	out, err := m.runner.Run("list-sessions", "-F", format)
 	if err != nil {
-		return nil
+		if isNoTmuxServerError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing tmux sessions: %w", err)
 	}
 
 	var targets []Target
@@ -425,14 +389,17 @@ func (m *Manager) findSessionTargets(projectRoot, branch, worktreePath string) [
 			Role:    fields[4],
 		})
 	}
-	return targets
+	return targets, nil
 }
 
-func (m *Manager) findWindowTargets(projectRoot, branch, worktreePath string) []Target {
+func (m *Manager) findWindowTargets(projectRoot, branch, worktreePath string) ([]Target, error) {
 	format := "#{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}"
 	out, err := m.runner.Run("list-windows", "-a", "-F", format)
 	if err != nil {
-		return nil
+		if isNoTmuxServerError(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("listing tmux windows: %w", err)
 	}
 
 	var targets []Target
@@ -455,7 +422,17 @@ func (m *Manager) findWindowTargets(projectRoot, branch, worktreePath string) []
 			Role:    fields[6],
 		})
 	}
-	return targets
+	return targets, nil
+}
+
+func isNoTmuxServerError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no server running") ||
+		strings.Contains(message, "failed to connect to server") ||
+		strings.Contains(message, "no sessions")
 }
 
 func labelMatch(gotProjectRoot, gotBranch, gotWorktree, projectRoot, branch, worktreePath string) bool {
@@ -495,11 +472,22 @@ func normalizePathLabel(path string) string {
 
 // DestroyLabeled kills all Grove-labeled tmux targets for a worktree.
 func (m *Manager) DestroyLabeled(projectRoot, branch, worktreePath string) (bool, error) {
-	targets := m.FindTargets(projectRoot, branch, worktreePath)
+	targets, err := m.FindTargets(projectRoot, branch, worktreePath)
+	if err != nil {
+		return false, err
+	}
+	return m.DestroyTargets(targets)
+}
+
+// DestroyTargets removes exact targets previously returned by FindTargets.
+// Callers may discover targets before deleting a worktree, then safely destroy
+// those exact IDs after the path no longer exists.
+func (m *Manager) DestroyTargets(targets []Target) (bool, error) {
 	if len(targets) == 0 {
 		return false, nil
 	}
 
+	killed := false
 	killedSessions := map[string]bool{}
 	var firstErr error
 	for _, target := range targets {
@@ -509,21 +497,65 @@ func (m *Manager) DestroyLabeled(projectRoot, branch, worktreePath string) (bool
 		if killedSessions[target.Session] {
 			continue
 		}
-		if _, err := m.runner.Run("kill-session", "-t", target.Target); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("killing tmux session %q: %w", target.Target, err)
+		if _, err := m.runner.Run("kill-session", "-t", target.Target); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("killing tmux session %q: %w", target.Target, err)
+			}
+			continue
 		}
+		killed = true
 		killedSessions[target.Session] = true
 	}
 	for _, target := range targets {
 		if target.Mode != "window" || killedSessions[target.Session] {
 			continue
 		}
-		if _, err := m.runner.Run("kill-window", "-t", target.Target); err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("killing tmux window %q: %w", target.Target, err)
+		if err := m.killWindowPreservingSession(target); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
 		}
+		killed = true
 	}
 
-	return true, firstErr
+	return killed, firstErr
+}
+
+func (m *Manager) killWindowPreservingSession(target Target) error {
+	if err := m.ensureWindowKillPreservesSession(target); err != nil {
+		return err
+	}
+	if _, err := m.runner.Run("kill-window", "-t", target.Target); err != nil {
+		return fmt.Errorf("killing tmux window %q: %w", target.Target, err)
+	}
+	return nil
+}
+
+func (m *Manager) ensureWindowKillPreservesSession(target Target) error {
+	count, err := m.sessionWindowCount(target.Session)
+	if err != nil {
+		return fmt.Errorf("querying tmux window count for session %q before killing %q: %w", target.Session, target.Target, err)
+	}
+	if count != 1 {
+		return nil
+	}
+	if _, err := m.runner.Run("new-window", "-d", "-t", target.Session, "-n", "grove-placeholder"); err != nil {
+		return fmt.Errorf("creating placeholder window in tmux session %q before killing %q: %w", target.Session, target.Target, err)
+	}
+	return nil
+}
+
+func (m *Manager) sessionWindowCount(session string) (int, error) {
+	out, err := m.runner.Run("list-windows", "-t", session, "-F", "#{window_id}")
+	if err != nil {
+		return 0, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return 0, nil
+	}
+	return len(strings.Split(out, "\n")), nil
 }
 
 // createSession creates a new detached tmux session.
@@ -532,27 +564,18 @@ func (m *Manager) createSession(name, workdir string) error {
 	return err
 }
 
-// createWindow creates a new window in the given session.
-// If that session already has a window with the same name, it is reused unless
-// force is true. Windows in other sessions must never be adopted or modified.
-func (m *Manager) createWindow(session, name, workdir string, force bool) (string, error) {
-	if !force && m.hasWindowInSession(session, name) {
-		return session + ":" + name, nil
-	}
+// createWindow creates a new window in the given session and returns its exact window ID.
+// It never adopts an existing same-name window; tmux may create duplicate window names.
+func (m *Manager) createWindow(session, name, workdir string) (string, error) {
 	out, err := m.runner.Run("new-window", "-P", "-F", "#{window_id}", "-t", session, "-n", name, "-c", workdir)
 	if err != nil {
 		return "", err
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return name, nil
+		return "", fmt.Errorf("created tmux window %q in session %q but tmux did not return an exact window id", name, session)
 	}
 	return out, nil
-}
-
-func (m *Manager) hasWindowInSession(session, name string) bool {
-	out, err := m.runner.Run("list-windows", "-t", session, "-F", "#{window_name}", "-f", "#{==:#{window_name},"+escapeTmuxFilter(name)+"}")
-	return err == nil && strings.TrimSpace(out) != ""
 }
 
 // currentSession returns the name of the current tmux session, or error if not inside tmux.

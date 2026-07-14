@@ -179,6 +179,8 @@ type mockGitRunner struct {
 	calls [][]string
 	// responses maps "arg1 arg2 ..." to (output, error).
 	responses map[string]mockResponse
+	// sequences provides ordered responses for commands invoked more than once.
+	sequences map[string][]mockResponse
 	// defaultResponse is returned when no matching response is found.
 	defaultResponse *mockResponse
 }
@@ -191,6 +193,7 @@ type mockResponse struct {
 func newMockGitRunner() *mockGitRunner {
 	return &mockGitRunner{
 		responses: make(map[string]mockResponse),
+		sequences: make(map[string][]mockResponse),
 	}
 }
 
@@ -202,9 +205,18 @@ func (m *mockGitRunner) OnDefault(output string, err error) {
 	m.defaultResponse = &mockResponse{output: output, err: err}
 }
 
+func (m *mockGitRunner) OnSequence(args string, responses ...mockResponse) {
+	m.sequences[args] = append([]mockResponse(nil), responses...)
+}
+
 func (m *mockGitRunner) Run(args ...string) (string, error) {
 	m.calls = append(m.calls, args)
 	key := strings.Join(args, " ")
+	if sequence := m.sequences[key]; len(sequence) > 0 {
+		resp := sequence[0]
+		m.sequences[key] = sequence[1:]
+		return resp.output, resp.err
+	}
 	if resp, ok := m.responses[key]; ok {
 		return resp.output, resp.err
 	}
@@ -224,6 +236,33 @@ func (m *mockGitRunner) wasCalled(args string) bool {
 }
 
 // --- Manager tests with mock git ---
+
+func TestManager_CommonStateDir(t *testing.T) {
+	t.Run("uses absolute common dir", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("rev-parse --path-format=absolute --git-common-dir", "/repo/.git", nil)
+		mgr := NewManager(git, "/repo", "/worktrees")
+		got, err := mgr.CommonStateDir()
+		if err != nil || got != "/repo/.git" {
+			t.Fatalf("CommonStateDir = %q, %v", got, err)
+		}
+	})
+
+	t.Run("falls back and resolves relative path", func(t *testing.T) {
+		git := newMockGitRunner()
+		git.On("rev-parse --path-format=absolute --git-common-dir", "", fmt.Errorf("unknown option"))
+		git.On("rev-parse --git-common-dir", "../main/.git", nil)
+		mgr := NewManager(git, "/repo/worktree", "/worktrees")
+		got, err := mgr.CommonStateDir()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := filepath.Clean("/repo/main/.git")
+		if got != want {
+			t.Fatalf("CommonStateDir = %q, want %q", got, want)
+		}
+	})
+}
 
 func TestManager_Create_ExistingWorktree(t *testing.T) {
 	git := newMockGitRunner()
@@ -345,6 +384,82 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	}
 }
 
+func TestManager_Create_FetchFailureDoesNotUseCachedRemoteBranch(t *testing.T) {
+	git := newMockGitRunner()
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
+	git.On("rev-parse --verify refs/heads/feat/remote", "", fmt.Errorf("not found"))
+	git.On("fetch origin", "", fmt.Errorf("network unavailable"))
+	git.On("rev-parse --verify refs/remotes/origin/feat/remote", "cached", nil)
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	if _, err := mgr.Create("feat/remote", ""); err == nil || !strings.Contains(err.Error(), "refreshing origin") {
+		t.Fatalf("Create error = %v, want refresh failure", err)
+	}
+	if git.wasCalled("branch --track -- feat/remote origin/feat/remote") {
+		t.Fatal("stale cached remote branch was adopted")
+	}
+}
+
+func TestManager_Create_NoOriginUsesLocalDefaultBranch(t *testing.T) {
+	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/local")
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
+	git.On("rev-parse --verify refs/heads/feat/local", "", fmt.Errorf("not found"))
+	git.On("fetch origin", "", fmt.Errorf("origin missing"))
+	git.On("rev-parse --verify refs/remotes/origin/feat/local", "", fmt.Errorf("not found"))
+	git.On("symbolic-ref refs/remotes/origin/HEAD", "", fmt.Errorf("not found"))
+	git.On("rev-parse --verify refs/heads/main", "abc", nil)
+	git.On("branch --no-track -- feat/local main", "", nil)
+	git.On("worktree add -- "+path+" feat/local", "", nil)
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	result, err := mgr.Create("feat/local", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.BranchCreated || !git.wasCalled("branch --no-track -- feat/local main") {
+		t.Fatalf("local default branch was not used: %#v calls=%v", result, git.calls)
+	}
+}
+
+func TestManager_Create_RollsBackNewBranchWhenWorktreeAddFails(t *testing.T) {
+	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/new")
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
+	git.On("rev-parse --verify refs/heads/feat/new", "", fmt.Errorf("not found"))
+	git.On("fetch origin", "", nil)
+	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
+	git.On("branch --no-track -- feat/new origin/main", "", nil)
+	git.On("worktree add -- "+path+" feat/new", "", fmt.Errorf("add failed"))
+	git.On("branch -D -- feat/new", "", nil)
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	_, err := mgr.Create("feat/new", "origin/main")
+	if err == nil {
+		t.Fatal("expected create failure")
+	}
+	if !git.wasCalled("branch -D -- feat/new") {
+		t.Fatalf("expected branch rollback, calls: %v", git.calls)
+	}
+}
+
+func TestManager_Create_DoesNotRollbackPreexistingBranchWhenWorktreeAddFails(t *testing.T) {
+	git := newMockGitRunner()
+	path := branchPath("/worktrees", "feat/existing")
+	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
+	git.On("rev-parse --verify refs/heads/feat/existing", "", nil)
+	git.On("worktree add -- "+path+" feat/existing", "", fmt.Errorf("add failed"))
+
+	mgr := NewManager(git, "/project", "/worktrees")
+	_, err := mgr.Create("feat/existing", "")
+	if err == nil {
+		t.Fatal("expected create failure")
+	}
+	if git.wasCalled("branch -D -- feat/existing") {
+		t.Fatalf("did not expect rollback of pre-existing branch, calls: %v", git.calls)
+	}
+}
+
 func TestManager_Remove(t *testing.T) {
 	t.Run("remove worktree and branch", func(t *testing.T) {
 		git := newMockGitRunner()
@@ -393,6 +508,45 @@ func TestManager_Remove(t *testing.T) {
 		}
 	})
 
+	t.Run("unexpected branch retry error returns partial result", func(t *testing.T) {
+		git := newMockGitRunner()
+		path := branchPath("/worktrees", "feat/retry-error")
+		git.On("worktree remove "+path, "", nil)
+		git.On("worktree prune", "", nil)
+		git.OnSequence("branch -D -- feat/retry-error",
+			mockResponse{err: fmt.Errorf("branch is used by worktree")},
+			mockResponse{err: fmt.Errorf("permission denied")},
+		)
+
+		mgr := NewManager(git, "/project", "/worktrees")
+		result, err := mgr.Remove("feat/retry-error", true, false)
+		if err == nil || !strings.Contains(err.Error(), "permission denied") {
+			t.Fatalf("Remove error = %v, want retry failure", err)
+		}
+		if result == nil || !result.WorktreeRemoved || result.BranchDeleteError == nil {
+			t.Fatalf("partial result = %#v, want removed worktree and branch error", result)
+		}
+		if result.BranchDeleted {
+			t.Fatal("branch must not be reported deleted")
+		}
+	})
+
+	t.Run("branch prune failure returns partial result", func(t *testing.T) {
+		git := newMockGitRunner()
+		path := branchPath("/worktrees", "feat/prune-error")
+		git.On("worktree remove "+path, "", nil)
+		git.On("branch -D -- feat/prune-error", "", fmt.Errorf("branch is used by worktree"))
+		git.On("worktree prune", "", fmt.Errorf("prune denied"))
+		mgr := NewManager(git, "/project", "/worktrees")
+		result, err := mgr.Remove("feat/prune-error", true, false)
+		if err == nil || !strings.Contains(err.Error(), "prune denied") {
+			t.Fatalf("Remove error = %v", err)
+		}
+		if result == nil || !result.WorktreeRemoved || result.BranchDeleteError == nil {
+			t.Fatalf("partial result = %#v", result)
+		}
+	})
+
 	t.Run("non-force remove dirty worktree fails", func(t *testing.T) {
 		git := newMockGitRunner()
 		path := branchPath("/worktrees", "feat/dirty")
@@ -425,7 +579,7 @@ func TestManager_Remove(t *testing.T) {
 		}
 	})
 
-	t.Run("deletes branch when stale worktree metadata still exists", func(t *testing.T) {
+	t.Run("refuses direct deletion when stale worktree directory still exists", func(t *testing.T) {
 		projectRoot := t.TempDir()
 		worktreeDir := filepath.Join(projectRoot, "worktrees")
 		path := branchPath(worktreeDir, "feat/ghost")
@@ -446,14 +600,45 @@ func TestManager_Remove(t *testing.T) {
 
 		mgr := NewManager(git, projectRoot, worktreeDir)
 		result, err := mgr.Remove("feat/ghost", true, true)
-		if err != nil {
-			t.Fatalf("unexpected error: %v", err)
+		if err == nil || !strings.Contains(err.Error(), "refusing direct recursive removal") {
+			t.Fatalf("expected manual-removal refusal, result=%#v err=%v", result, err)
 		}
-		if !result.BranchDeleted {
-			t.Error("expected branch deletion after ghost cleanup")
+		if _, statErr := os.Stat(path); statErr != nil {
+			t.Fatalf("stale worktree directory was changed: %v", statErr)
 		}
-		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
-			t.Fatalf("expected stale worktree directory to be removed, stat err: %v", statErr)
+		if git.wasCalled("branch -D -- feat/ghost") {
+			t.Fatal("branch deleted while stale directory remains")
+		}
+	})
+
+	t.Run("prune failure preserves validated ghost directory", func(t *testing.T) {
+		projectRoot := t.TempDir()
+		worktreeDir := filepath.Join(projectRoot, "worktrees")
+		path := branchPath(worktreeDir, "feat/ghost-prune")
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", "ghost-prune")+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		marker := filepath.Join(path, "keep")
+		if err := os.WriteFile(marker, []byte("keep"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		git := newMockGitRunner()
+		git.On("worktree remove --force "+path, "", fmt.Errorf("%s is not a working tree", path))
+		git.On("worktree list --porcelain", "worktree "+projectRoot+"\nHEAD abc\nbranch refs/heads/main\n\nworktree "+path+"\nHEAD def\nbranch refs/heads/feat/ghost-prune\n", nil)
+		git.On("worktree prune", "", fmt.Errorf("prune denied"))
+
+		mgr := NewManager(git, projectRoot, worktreeDir)
+		if _, err := mgr.Remove("feat/ghost-prune", true, true); err == nil || !strings.Contains(err.Error(), "prune denied") {
+			t.Fatalf("Remove error = %v", err)
+		}
+		if got, err := os.ReadFile(marker); err != nil || string(got) != "keep" {
+			t.Fatalf("ghost contents changed: %q, %v", got, err)
+		}
+		if git.wasCalled("branch -D -- feat/ghost-prune") {
+			t.Fatal("branch deleted after prune failure")
 		}
 	})
 

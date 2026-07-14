@@ -38,12 +38,13 @@ func openBranch(cmd *cobra.Command, branch string, newWindow bool) error {
 
 	found, err := findWorktreeByBranch(ctx, branch)
 	if err != nil {
-		return outputError(cmd, err)
+		return outputError(cmd, newCodedError("worktree_not_found", err))
 	}
 
-	_, managed, err := resolveRuntimeEnv(ctx, branch)
-	if err != nil {
-		return outputError(cmd, err)
+	// Validate managed env and persisted state before making any tmux query.
+	// Existing canonical targets still take the read-only fast path below.
+	if _, _, err := resolveRuntimeEnv(ctx, branch); err != nil {
+		return outputError(cmd, newCodedError("open_env_invalid", err))
 	}
 
 	tmuxCfg := effectiveTmuxConfig(ctx.Config)
@@ -53,27 +54,50 @@ func openBranch(cmd *cobra.Command, branch string, newWindow bool) error {
 		mode = "window"
 	}
 
-	canonical, canonicalExists := tmuxMgr.FindCanonical(ctx.ProjectRoot, branch, found.Path, "")
+	canonical, canonicalExists, err := tmuxMgr.FindCanonical(ctx.ProjectRoot, branch, found.Path, "")
+	if err != nil {
+		return outputError(cmd, newCodedError("tmux_discovery_failed", err))
+	}
 	if !newWindow && canonicalExists {
+		lock, lockErr := acquireWorkflowLock(cmd.Context(), ctx)
+		if lockErr != nil {
+			return outputError(cmd, lockErr)
+		}
+		current, currentErr := findWorktreeByBranch(ctx, branch)
+		releaseErr := lock.Release()
+		if currentErr != nil {
+			return outputError(cmd, newCodedError("worktree_not_found", combineCleanupErrors(currentErr, releaseErr)))
+		}
+		samePath, samePathErr := sameWorktreeEnvRoot(current.Path, found.Path)
+		if samePathErr != nil || !samePath {
+			return outputError(cmd, newCodedError("worktree_changed", combineCleanupErrors(fmt.Errorf("worktree path changed from %s to %s; retry open", found.Path, current.Path), samePathErr, releaseErr)))
+		}
+		if releaseErr != nil {
+			return outputError(cmd, newCodedError("project_lock_release_failed", releaseErr))
+		}
 		if err := tmuxMgr.AttachTarget(canonical); err != nil {
-			return outputError(cmd, err)
+			return outputError(cmd, newCodedError("open_tmux_failed", err))
 		}
 		return nil
 	}
 
-	if !newWindow {
-		name := tmuxMgr.ResolveName(branch, mode)
-		legacyExists := (mode == "session" && tmuxMgr.HasSession(name)) || (mode == "window" && tmuxMgr.HasWindow(name))
-		if legacyExists {
-			if err := tmuxMgr.Attach(name, mode); err != nil {
-				return outputError(cmd, err)
-			}
-			return nil
-		}
-	}
-
-	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
+	_, managed, releaseLock, err := resolvePersistentRuntimeEnv(cmd.Context(), ctx, branch)
+	if err != nil {
 		return outputError(cmd, err)
+	}
+	current, currentErr := findWorktreeByBranch(ctx, branch)
+	if currentErr != nil {
+		cleanupErr := reconcilePortRegistry(ctx)
+		releaseErr := releaseLock()
+		return outputError(cmd, newCodedError("worktree_not_found", combineCleanupErrors(currentErr, cleanupErr, releaseErr)))
+	}
+	found = current
+	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
+		releaseErr := releaseLock()
+		return outputError(cmd, combineCleanupErrors(err, releaseErr))
+	}
+	if err := releaseLock(); err != nil {
+		return outputError(cmd, newCodedError("project_lock_release_failed", err))
 	}
 
 	role := tmux.RoleCanonical
@@ -92,7 +116,7 @@ func openBranch(cmd *cobra.Command, branch string, newWindow bool) error {
 		ForceNewWindow: newWindow,
 	}
 	if err := tmuxMgr.Create(tmuxOpts); err != nil {
-		return outputError(cmd, fmt.Errorf("setting up tmux workspace: %w", err))
+		return outputError(cmd, newCodedError("open_tmux_failed", fmt.Errorf("setting up tmux workspace: %w", err)))
 	}
 
 	return nil

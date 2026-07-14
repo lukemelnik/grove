@@ -114,32 +114,40 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, err)
 	}
 
-	portAssignment, managed, err := resolveRuntimeEnv(ctx, branch)
+	portAssignment, managed, releaseLock, err := resolvePersistentRuntimeEnv(cmd.Context(), ctx, branch)
 	if err != nil {
 		return outputError(cmd, err)
 	}
 
 	result, err := ctx.Worktrees.Create(branch, fromRef)
 	if err != nil {
-		return outputError(cmd, fmt.Errorf("creating worktree: %w", err))
+		cleanupErr := reconcilePortRegistry(ctx)
+		releaseErr := releaseLock()
+		return outputError(cmd, newCodedError("create_worktree_failed", combineCleanupErrors(fmt.Errorf("creating worktree: %w", err), cleanupErr, releaseErr)))
 	}
 
 	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, result.Path, managed); err != nil {
-		return outputError(cmd, err)
+		cleanupErr := rollbackCreatedResourcesLocked(ctx, result)
+		releaseErr := releaseLock()
+		return outputError(cmd, newCodedError("create_env_failed", combineCleanupErrors(err, cleanupErr, releaseErr)))
+	}
+	if err := releaseLock(); err != nil {
+		return outputError(cmd, newCodedError("project_lock_release_failed", fmt.Errorf("releasing project mutation lock; created resources were retained: %w", err)))
 	}
 
-	if ctx.Config.Hooks != nil && len(ctx.Config.Hooks.PostCreate) > 0 {
-		hookStdout := os.Stdout
-		if jsonOutput {
-			hookStdout = os.Stderr // keep JSON output clean
-		}
+	postCreateHooksRan := ctx.Config.Hooks != nil && len(ctx.Config.Hooks.PostCreate) > 0
+	if postCreateHooksRan {
 		hookOpts := hooks.RunOpts{
-			Branch:       branch,
-			WorktreePath: result.Path,
-			ProjectRoot:  ctx.ProjectRoot,
-			Ports:        portAssignment.Ports,
-			Stdout:       hookStdout,
-			Stderr:       os.Stderr,
+			Branch:         branch,
+			WorktreePath:   result.Path,
+			ProjectRoot:    ctx.ProjectRoot,
+			Ports:          portAssignment.Ports,
+			Stdout:         cmd.OutOrStdout(),
+			Stderr:         cmd.ErrOrStderr(),
+			EnvPassthrough: ctx.Config.Hooks.EnvPassthrough,
+			OutputMode:     configuredHookOutputMode(ctx.Config.Hooks),
+			Context:        cmd.Context(),
+			Timeout:        ctx.Config.Hooks.Timeout,
 		}
 		if warnings := hooks.RunPostCreate(ctx.Config.Hooks.PostCreate, hookOpts); len(warnings) > 0 {
 			for _, w := range warnings {
@@ -148,16 +156,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	if jsonOutput {
-		if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
-			return outputError(cmd, err)
-		}
-	} else if err := outputText(cmd, result, portAssignment.Ports); err != nil {
-		return outputError(cmd, err)
-	}
-
 	if provisionOnly {
-		if !jsonOutput {
+		if jsonOutput {
+			if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
+				return outputError(cmd, newCodedError("create_output_failed", err))
+			}
+		} else {
+			if err := outputText(cmd, result, portAssignment.Ports); err != nil {
+				return outputError(cmd, newCodedError("create_output_failed", err))
+			}
 			fmt.Fprintf(cmd.OutOrStdout(), "\nNext steps:\n  grove open %s   # open or restore the full tmux workspace\n  grove enter %s  # enter this worktree in the current pane\n", result.Branch, result.Branch)
 		}
 		return nil
@@ -176,10 +183,55 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		Role:         tmux.RoleCanonical,
 	}
 	if err := tmuxMgr.Create(tmuxOpts); err != nil {
-		return outputError(cmd, fmt.Errorf("setting up tmux workspace: %w", err))
+		setupErr := fmt.Errorf("setting up tmux workspace: %w", err)
+		if postCreateHooksRan {
+			return outputError(cmd, newCodedError("create_tmux_failed", fmt.Errorf("%w; worktree and branch retained because post-create hooks may have produced files", setupErr)))
+		}
+		lock, lockErr := acquireWorkflowLock(cmd.Context(), ctx)
+		if lockErr != nil {
+			return outputError(cmd, newCodedError("create_tmux_failed", combineCleanupErrors(setupErr, fmt.Errorf("resources retained because rollback lock could not be acquired: %w", lockErr))))
+		}
+		cleanupErr := rollbackCreatedResourcesLocked(ctx, result)
+		releaseErr := lock.Release()
+		return outputError(cmd, newCodedError("create_tmux_failed", combineCleanupErrors(setupErr, cleanupErr, releaseErr)))
+	}
+
+	if jsonOutput {
+		if err := outputJSON(cmd, result, portAssignment.Ports); err != nil {
+			return outputError(cmd, newCodedError("create_output_failed", err))
+		}
+	} else if err := outputText(cmd, result, portAssignment.Ports); err != nil {
+		return outputError(cmd, newCodedError("create_output_failed", err))
 	}
 
 	return nil
+}
+
+func rollbackCreatedResourcesLocked(ctx *projectContext, result *worktree.CreateResult) error {
+	var cleanupErr error
+	if result != nil && (result.WorktreeCreated || result.BranchCreated) {
+		if _, err := ctx.Worktrees.Remove(result.Branch, result.BranchCreated, true); err != nil {
+			cleanupErr = fmt.Errorf("rolling back created resources: %w", err)
+		}
+	}
+	if err := reconcilePortRegistry(ctx); err != nil {
+		cleanupErr = combineCleanupErrors(cleanupErr, fmt.Errorf("reconciling port registry after rollback: %w", err))
+	}
+	return cleanupErr
+}
+
+func combineCleanupErrors(original error, cleanupErrors ...error) error {
+	for _, cleanupErr := range cleanupErrors {
+		if cleanupErr == nil {
+			continue
+		}
+		if original == nil {
+			original = cleanupErr
+			continue
+		}
+		original = fmt.Errorf("%w (cleanup failed: %v)", original, cleanupErr)
+	}
+	return original
 }
 
 func outputJSON(cmd *cobra.Command, result *worktree.CreateResult, assignedPorts map[string]int) error {

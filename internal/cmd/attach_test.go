@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -265,6 +267,12 @@ func (r *noopTmuxRunner) Run(args ...string) (string, error) {
 	if len(args) >= 3 && args[0] == "display-message" && args[1] == "-p" && args[len(args)-1] == "#{session_name}" {
 		return "test-session", nil
 	}
+	if len(args) > 0 && args[0] == "new-window" && slices.Contains(args, "-P") {
+		return "@new", nil
+	}
+	if len(args) > 1 && args[0] == "list-windows" && args[1] == "-t" {
+		return "@existing\n@other", nil
+	}
 	return "", nil
 }
 
@@ -295,13 +303,20 @@ func (r *recordingTmuxRunner) Run(args ...string) (string, error) {
 
 	if len(args) > 0 {
 		switch args[0] {
+		case "new-window":
+			if slices.Contains(args, "-P") {
+				return fmt.Sprintf("@new-%d", len(r.commands)), nil
+			}
 		case "has-session":
 			if !r.hasSessionResult {
 				return "", exec.ErrNotFound
 			}
 		case "list-windows":
+			if len(args) > 1 && args[1] == "-t" {
+				return "@existing\n@other", nil
+			}
 			if !r.hasWindowResult {
-				return "", exec.ErrNotFound
+				return "", nil
 			}
 		case "display-message":
 			if len(args) >= 3 && args[1] == "-p" && args[len(args)-1] == "#{session_name}" {

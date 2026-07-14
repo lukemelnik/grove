@@ -50,13 +50,24 @@ func enterBranch(cmd *cobra.Command, branch string) error {
 		return outputError(cmd, err)
 	}
 
-	_, managed, err := resolveRuntimeEnv(ctx, branch)
+	_, managed, releaseLock, err := resolvePersistentRuntimeEnv(cmd.Context(), ctx, branch)
 	if err != nil {
 		return outputError(cmd, err)
 	}
+	current, currentErr := findWorktreeByBranch(ctx, branch)
+	if currentErr != nil {
+		cleanupErr := reconcilePortRegistry(ctx)
+		releaseErr := releaseLock()
+		return outputError(cmd, newCodedError("worktree_not_found", combineCleanupErrors(currentErr, cleanupErr, releaseErr)))
+	}
+	found = current
 
 	if err := syncWorktreeEnv(ctx.Config, ctx.ProjectRoot, found.Path, managed); err != nil {
-		return outputError(cmd, err)
+		releaseErr := releaseLock()
+		return outputError(cmd, combineCleanupErrors(err, releaseErr))
+	}
+	if err := releaseLock(); err != nil {
+		return outputError(cmd, newCodedError("project_lock_release_failed", err))
 	}
 
 	shell := os.Getenv("SHELL")

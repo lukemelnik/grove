@@ -8,6 +8,7 @@ package worktree
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -140,6 +141,10 @@ type CreateResult struct {
 	Resolution BranchResolution
 	// Created is true if a new worktree was created, false if reused.
 	Created bool
+	// WorktreeCreated is true if this invocation created a worktree.
+	WorktreeCreated bool
+	// BranchCreated is true if this invocation created a local branch.
+	BranchCreated bool
 }
 
 // Manager handles worktree operations.
@@ -188,7 +193,7 @@ func (m *Manager) Create(branch, fromRef string) (*CreateResult, error) {
 	}
 
 	// Determine branch resolution
-	resolution, err := m.resolveBranch(branch, fromRef)
+	resolution, branchCreated, err := m.resolveBranch(branch, fromRef)
 	if err != nil {
 		return nil, fmt.Errorf("resolving branch %q: %w", branch, err)
 	}
@@ -196,56 +201,67 @@ func (m *Manager) Create(branch, fromRef string) (*CreateResult, error) {
 	// Create the worktree (-- separates options from positional args)
 	_, err = m.git.Run("worktree", "add", "--", wtPath, branch)
 	if err != nil {
+		if branchCreated {
+			if _, deleteErr := m.git.Run("branch", "-D", "--", branch); deleteErr != nil {
+				return nil, fmt.Errorf("creating worktree at %s: %w (rollback deleting branch %q failed: %v)", wtPath, err, branch, deleteErr)
+			}
+		}
 		return nil, fmt.Errorf("creating worktree at %s: %w", wtPath, err)
 	}
 
 	return &CreateResult{
-		Path:       wtPath,
-		Branch:     branch,
-		Resolution: resolution,
-		Created:    true,
+		Path:            wtPath,
+		Branch:          branch,
+		Resolution:      resolution,
+		Created:         true,
+		WorktreeCreated: true,
+		BranchCreated:   branchCreated,
 	}, nil
 }
 
 // resolveBranch ensures the branch exists locally with the correct setup.
 // Returns the resolution type.
-func (m *Manager) resolveBranch(branch, fromRef string) (BranchResolution, error) {
+func (m *Manager) resolveBranch(branch, fromRef string) (BranchResolution, bool, error) {
 	// 1. Check if branch exists locally
 	if m.branchExistsLocal(branch) {
-		return BranchLocal, nil
+		return BranchLocal, false, nil
 	}
 
-	// 2. Check if branch exists on remote
-	// Fetch first to ensure we have up-to-date remote refs
-	if _, err := m.git.Run("fetch", "origin"); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: could not fetch from origin: %v\n", err)
-	}
-
+	// 2. Check if branch exists on remote. A failed refresh must not silently
+	// adopt a potentially stale cached remote branch.
+	_, fetchErr := m.git.Run("fetch", "origin")
 	if m.branchExistsRemote(branch) {
+		if fetchErr != nil {
+			return 0, false, fmt.Errorf("refreshing origin before using remote branch %q: %w", branch, fetchErr)
+		}
 		// Create local tracking branch from remote
 		_, err := m.git.Run("branch", "--track", "--", branch, "origin/"+branch)
 		if err != nil {
-			return 0, fmt.Errorf("creating tracking branch: %w", err)
+			return 0, false, fmt.Errorf("creating tracking branch: %w", err)
 		}
-		return BranchRemoteTracking, nil
+		return BranchRemoteTracking, true, nil
 	}
 
 	// 3. Branch doesn't exist anywhere — create from base ref
 	baseRef := fromRef
 	if baseRef == "" {
-		baseRef = m.defaultBaseRef()
+		if fetchErr != nil {
+			// Repositories without an origin can still create branches safely from
+			// their local default branch.
+			baseRef = m.DefaultBranch()
+		} else {
+			baseRef = m.defaultBaseRef()
+		}
 	}
-
-	// Note: we already fetched origin above, no need to fetch again.
 
 	// Create new branch from the chosen base ref without inheriting that ref as
 	// upstream. The feature branch should track its own remote branch on first
 	// push, not the base branch it was created from.
 	_, err := m.git.Run("branch", "--no-track", "--", branch, baseRef)
 	if err != nil {
-		return 0, fmt.Errorf("creating branch %q from %q: %w", branch, baseRef, err)
+		return 0, false, fmt.Errorf("creating branch %q from %q: %w", branch, baseRef, err)
 	}
-	return BranchNew, nil
+	return BranchNew, true, nil
 }
 
 // defaultBaseRef returns the default base ref (origin/main or origin/master).
@@ -273,6 +289,30 @@ func (m *Manager) branchExistsLocal(branch string) bool {
 func (m *Manager) branchExistsRemote(branch string) bool {
 	_, err := m.git.Run("rev-parse", "--verify", "refs/remotes/origin/"+branch)
 	return err == nil
+}
+
+// CommonStateDir returns the shared Git state directory used by every linked
+// worktree in the repository.
+func (m *Manager) CommonStateDir() (string, error) {
+	out, err := m.git.Run("rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		out, err = m.git.Run("rev-parse", "--git-common-dir")
+		if err != nil {
+			return "", fmt.Errorf("resolving git common dir: %w", err)
+		}
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "", fmt.Errorf("resolving git common dir: empty output")
+	}
+	if !filepath.IsAbs(out) {
+		abs, absErr := filepath.Abs(filepath.Join(m.projectRoot, out))
+		if absErr != nil {
+			return "", fmt.Errorf("resolving git common dir %q: %w", out, absErr)
+		}
+		out = abs
+	}
+	return filepath.Clean(out), nil
 }
 
 // List returns information about all worktrees in the repository.
@@ -335,10 +375,14 @@ func parseWorktreeList(output string) []Info {
 
 // RemoveResult describes what Remove actually did.
 type RemoveResult struct {
+	// WorktreeRemoved is true if the worktree was removed.
+	WorktreeRemoved bool
 	// BranchDeleted is true if the local branch was deleted.
 	BranchDeleted bool
 	// BranchSkipReason explains why the branch wasn't deleted (empty if deleted or not requested).
 	BranchSkipReason string
+	// BranchDeleteError is the error encountered while deleting the branch after worktree removal.
+	BranchDeleteError error
 }
 
 // Remove removes a worktree and optionally deletes the branch.
@@ -364,6 +408,9 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 		if strings.Contains(err.Error(), "not a working tree") {
 			_, statErr := os.Stat(wtPath)
 			pathExists := statErr == nil
+			if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				return nil, fmt.Errorf("checking leftover worktree path %s: %w", wtPath, statErr)
+			}
 			if !registered && !pathExists {
 				return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
 			}
@@ -374,19 +421,19 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 				return nil, fmt.Errorf("refusing to remove unregistered path %s", wtPath)
 			}
 
-			// Prune stale worktree metadata first
-			_ = m.Prune()
+			// Prune stale worktree metadata before deleting the validated leftover.
+			if pruneErr := m.Prune(); pruneErr != nil {
+				return nil, fmt.Errorf("pruning stale worktree metadata before removing %s: %w", wtPath, pruneErr)
+			}
 
-			// Remove the leftover directory if it exists
 			if pathExists {
-				if rmErr := os.RemoveAll(wtPath); rmErr != nil {
-					return nil, fmt.Errorf("removing leftover directory %s: %w", wtPath, rmErr)
-				}
+				return nil, fmt.Errorf("refusing direct recursive removal of stale worktree path %s after Git stopped recognizing it; inspect and remove it manually", wtPath)
 			}
 		} else {
 			return nil, fmt.Errorf("removing worktree at %s: %w", wtPath, err)
 		}
 	}
+	result.WorktreeRemoved = true
 
 	if deleteBranch {
 		_, err := m.git.Run("branch", "-D", "--", branch)
@@ -395,13 +442,19 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 			if strings.Contains(errMsg, "used by worktree") {
 				// The blocking worktree might be a ghost (directory deleted
 				// but metadata not pruned). Prune and retry once.
-				_ = m.Prune()
+				if pruneErr := m.Prune(); pruneErr != nil {
+					result.BranchDeleteError = fmt.Errorf("pruning worktree metadata before deleting branch %q: %w", branch, pruneErr)
+					return result, result.BranchDeleteError
+				}
 				_, retryErr := m.git.Run("branch", "-D", "--", branch)
 				if retryErr != nil {
 					if strings.Contains(retryErr.Error(), "used by worktree") {
 						result.BranchSkipReason = "branch checked out in another worktree"
+					} else if strings.Contains(retryErr.Error(), "not found") {
+						result.BranchSkipReason = "branch already deleted"
 					} else {
-						result.BranchSkipReason = "could not delete branch after prune"
+						result.BranchDeleteError = fmt.Errorf("deleting branch %q after prune: %w", branch, retryErr)
+						return result, result.BranchDeleteError
 					}
 				} else {
 					result.BranchDeleted = true
@@ -409,7 +462,9 @@ func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult
 			} else if strings.Contains(errMsg, "not found") {
 				result.BranchSkipReason = "branch already deleted"
 			} else {
-				return nil, fmt.Errorf("deleting branch %q: %w", branch, err)
+				result.BranchSkipReason = "could not delete branch"
+				result.BranchDeleteError = fmt.Errorf("deleting branch %q: %w", branch, err)
+				return result, result.BranchDeleteError
 			}
 		} else {
 			result.BranchDeleted = true

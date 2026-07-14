@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,11 +66,8 @@ services:
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", output)
-	}
-	if !strings.Contains(output, "Deleted branch") {
-		t.Errorf("expected 'Deleted branch' in output, got:\n%s", output)
+	if !strings.Contains(output, `"worktree":`) || !strings.Contains(output, `"deleted_branch": true`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", output)
 	}
 }
 
@@ -124,8 +122,8 @@ services:
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "Kept branch") {
-		t.Errorf("expected 'Kept branch' in output, got:\n%s", output)
+	if !strings.Contains(output, `"kept_branch": true`) {
+		t.Errorf("expected JSON kept-branch result, got:\n%s", output)
 	}
 
 	// Verify the branch still exists
@@ -372,8 +370,8 @@ services:
 		t.Fatalf("delete --force should succeed even with open PR: %v\nOutput: %s", err, buf.String())
 	}
 
-	if !strings.Contains(buf.String(), "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), `"worktree":`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", buf.String())
 	}
 }
 
@@ -429,8 +427,8 @@ services:
 		t.Fatalf("delete should succeed when gh is not available: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 
-	if !strings.Contains(stdout.String(), "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), `"worktree":`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", stdout.String())
 	}
 }
 
@@ -553,8 +551,8 @@ services:
 		t.Fatalf("delete --force should succeed for unpushed branch: %v\nOutput: %s", err, buf.String())
 	}
 
-	if !strings.Contains(buf.String(), "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", buf.String())
+	if !strings.Contains(buf.String(), `"worktree":`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", buf.String())
 	}
 }
 
@@ -623,8 +621,8 @@ services:
 		t.Fatalf("delete should succeed for gone branch without --force: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 
-	if !strings.Contains(stdout.String(), "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), `"worktree":`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "remote branch was deleted") {
 		t.Errorf("expected 'remote branch was deleted' note in stderr, got:\n%s", stderr.String())
@@ -845,11 +843,59 @@ services:
 		t.Fatalf("delete should succeed for rebase-merged branch without --force: %v\nstdout: %s\nstderr: %s", err, stdout.String(), stderr.String())
 	}
 
-	if !strings.Contains(stdout.String(), "Deleted worktree") {
-		t.Errorf("expected 'Deleted worktree' in output, got:\n%s", stdout.String())
+	if !strings.Contains(stdout.String(), `"worktree":`) {
+		t.Errorf("expected JSON deletion result, got:\n%s", stdout.String())
 	}
 	if !strings.Contains(stderr.String(), "merged via rebase") {
 		t.Errorf("expected 'merged via rebase' note in stderr, got:\n%s", stderr.String())
+	}
+}
+
+func TestDeleteCmd_JSONPartialTmuxFailureIncludesStructuredError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+	worktreeDir := t.TempDir()
+	repoDir := setupCreateTestRepo(t, "worktree_dir: "+worktreeDir+"\n")
+	branch := "feat/delete-partial"
+	gitRun(t, repoDir, "branch", branch)
+	wtPath := filepath.Join(worktreeDir, "feat-delete-partial")
+	gitRun(t, repoDir, "worktree", "add", wtPath, branch)
+	mockWorkingDir(t, repoDir)
+	oldGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = oldGhAvailable })
+
+	runner := &recordingTmuxRunner{
+		outputs: map[string]string{
+			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@partial\tdev\trenamed\t" + repoDir + "\t" + branch + "\t" + wtPath + "\tcanonical",
+		},
+		errors: map[string]error{
+			"list-windows -t dev -F #{window_id}": fmt.Errorf("synthetic count failure"),
+		},
+	}
+	oldFactory := tmuxRunnerFactory
+	tmuxRunnerFactory = func() tmux.Runner { return runner }
+	t.Cleanup(func() { tmuxRunnerFactory = oldFactory })
+
+	root := NewRootCmd()
+	var stdout, stderr bytes.Buffer
+	root.SetOut(&stdout)
+	root.SetErr(&stderr)
+	root.SetArgs([]string{"delete", branch, "--force", "--json"})
+	err := root.Execute()
+	if err == nil || !ErrorAlreadyReported(err) {
+		t.Fatalf("expected reported partial failure, got %v; commands=%v; stdout=%s; stderr=%s", err, runner.commands, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"code": "delete_partial_failure"`) || !strings.Contains(stdout.String(), `"stage": "tmux"`) {
+		t.Fatalf("partial JSON missing structured error: %s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("partial JSON emitted duplicate stderr: %s", stderr.String())
+	}
+	if _, statErr := os.Stat(wtPath); !os.IsNotExist(statErr) {
+		t.Fatalf("worktree was not removed before tmux partial failure: %v", statErr)
 	}
 }
 
@@ -921,10 +967,14 @@ tmux:
 	ghAvailable = func() bool { return false }
 	t.Cleanup(func() { ghAvailable = origGhAvailable })
 
+	labelPath, err := filepath.EvalSymlinks(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := &recordingTmuxRunner{
 		outputs: map[string]string{
 			"list-sessions -F #{session_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}":                                 "",
-			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@7\tdev\trenamed\t" + repoDir + "\tfeat/delete-labeled\t" + wtPath + "\tcanonical",
+			"list-windows -a -F #{window_id}\t#{session_name}\t#{window_name}\t#{@grove.project_root}\t#{@grove.branch}\t#{@grove.worktree_path}\t#{@grove.role}": "@7\tdev\trenamed\t" + repoDir + "\tfeat/delete-labeled\t" + labelPath + "\tcanonical",
 		},
 	}
 	origFactory := tmuxRunnerFactory

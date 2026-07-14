@@ -10,8 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lukemelnik/grove/internal/config"
-	"github.com/lukemelnik/grove/internal/ports"
 	"github.com/lukemelnik/grove/internal/worktree"
 
 	"github.com/spf13/cobra"
@@ -67,32 +65,19 @@ Agents and scripts should use grove list --json and avoid the interactive picker
 func runList(cmd *cobra.Command, args []string) error {
 	jsonOutput := shouldOutputJSON(cmd)
 
-	// Step 1: Discover and load config
-	cwd, err := getWorkingDir()
-	if err != nil {
-		return outputError(cmd, fmt.Errorf("getting working directory: %w", err))
-	}
-
-	configPath, projectRoot, err := config.Discover(cwd)
+	ctx, err := loadProjectContext()
 	if err != nil {
 		return outputError(cmd, err)
 	}
-
-	cfg, err := config.Load(configPath)
-	if err != nil {
-		return outputError(cmd, err)
-	}
-
-	// Step 2: List worktrees
-	git := worktree.NewGitRunner(projectRoot)
-	wtMgr := worktree.NewManager(git, projectRoot, cfg.WorktreeDir)
-
-	worktrees, err := wtMgr.List()
+	worktrees, err := ctx.Worktrees.List()
 	if err != nil {
 		return outputError(cmd, fmt.Errorf("listing worktrees: %w", err))
 	}
 
-	entries := buildListEntries(cfg, wtMgr, worktrees)
+	entries, err := buildListEntries(ctx, worktrees)
+	if err != nil {
+		return outputError(cmd, err)
+	}
 
 	// Step 4: Output
 	if jsonOutput {
@@ -118,10 +103,10 @@ func runList(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func buildListEntries(cfg *config.Config, wtMgr *worktree.Manager, worktrees []worktree.Info) []listEntry {
+func buildListEntries(ctx *projectContext, worktrees []worktree.Info) ([]listEntry, error) {
+	cfg := ctx.Config
 	// Compute ports for each worktree and build entries.
 	// Filter out bare repos and detached worktrees.
-	defaultBranch := wtMgr.DefaultBranch()
 	var entries []listEntry
 	for _, wt := range worktrees {
 		if wt.IsBare || wt.Branch == "" {
@@ -135,10 +120,11 @@ func buildListEntries(cfg *config.Config, wtMgr *worktree.Manager, worktrees []w
 		}
 
 		if len(cfg.Services) > 0 {
-			assignment, err := ports.Assign(cfg.Services, wt.Branch, ports.DefaultMaxOffset, defaultBranch)
-			if err == nil {
-				entry.Ports = assignment.Ports
+			assignment, err := readPortAssignment(ctx, wt.Branch)
+			if err != nil {
+				return nil, err
 			}
+			entry.Ports = assignment.Ports
 		}
 
 		entries = append(entries, entry)
@@ -147,7 +133,7 @@ func buildListEntries(cfg *config.Config, wtMgr *worktree.Manager, worktrees []w
 	sort.Slice(entries, func(i, j int) bool {
 		return entries[i].Branch < entries[j].Branch
 	})
-	return entries
+	return entries, nil
 }
 
 func printListText(cmd *cobra.Command, entries []listEntry) {

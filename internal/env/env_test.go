@@ -1495,3 +1495,28 @@ func assertNoTempEntries(t *testing.T, dir string) {
 		}
 	}
 }
+
+func TestRenderEnvLocal_QuotesUnsafeValuesAndRoundTrips(t *testing.T) {
+	vars := map[string]string{
+		"SAFE":  "abc_123-./:",
+		"SPACE": "hello world",
+		"HASH":  "value # not comment",
+		"QUOTE": `say "hi"`,
+		"SHELL": `$(echo bad) $PATH ` + "`whoami`" + ` \`,
+		"META":  `a;b&c|d<e>*?[x]{y}!~`,
+		"EMPTY": "",
+	}
+	content := renderEnvLocal(vars)
+	if strings.Contains(content, "SPACE=hello world\n") {
+		t.Fatalf("unsafe value left unquoted: %s", content)
+	}
+	parsed, err := ParseEnvContent(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for k, want := range vars {
+		if parsed[k] != want {
+			t.Fatalf("%s roundtrip = %q, want %q\ncontent:\n%s", k, parsed[k], want, content)
+		}
+	}
+}

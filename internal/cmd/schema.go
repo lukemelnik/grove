@@ -9,7 +9,7 @@ import (
 const schemaText = `# .grove.yml — Full Configuration Reference
 #
 # Place this file in your project root. Grove discovers it automatically,
-# even from inside a worktree.
+# even from inside a worktree. Unknown fields are rejected strictly.
 
 # Optional override for where worktrees are created (relative to project root).
 # Default when omitted: "../.grove-worktrees/<repo-name>"
@@ -19,24 +19,29 @@ const schemaText = `# .grove.yml — Full Configuration Reference
 
 # Env files to symlink from the main repo (for files not tied to a service).
 # Paths must be relative to the project root and cannot escape it.
-# Canonical sources are never modified; main-worktree symlinking is a no-op.
-# Existing regular destinations are preserved and rejected. Missing sources are
-# optional, but unsafe/corrupt sources abort setup. Grove never logs their values.
-# Grove atomically writes marker-owned .env.local files next to each symlink.
+# Canonical sources are never modified. When the project root and worktree are
+# the same location, Grove does not create, replace, write, symlink, or delete
+# configured env files or generated locals. Linked worktrees get validated
+# symlinks plus marker-owned .env.local files written atomically. Missing sources
+# remain untouched; unsafe/corrupt sources abort setup. Grove never logs values.
 # Service env files (see services below) are auto-included — no need to
 # list them here too.
 env_files:
   - .env
 
-# Services with base ports. The default branch (main/master) uses the base
-# ports directly. Other branches get a deterministic hash-based offset.
-# Hash collisions between different branch names are possible.
+# Services with base ports. Grove stores durable, collision-free active-worktree
+# port assignments in the Git common state directory at grove/ports.json,
+# guarded by a cross-process mutation lock. Existing active records stay stable;
+# malformed state or config drift fails closed. The registry contains no secrets.
 #
 # Each service can declare:
 #   port:     base port and the env var name that receives the assigned port (optional)
 #   env_file: the .env file for this service (symlinked + .env.local written)
 #             required when using service-level env below
 #   env:      additional env vars scoped to this service's .env.local
+#
+# Global env keys and service-managed env keys may not collide.
+# Values are quoted/escaped when generated.
 #
 # Services without a port block are env-only — they get env vars written
 # but skip port assignment. Useful for services that share another
@@ -144,17 +149,26 @@ tmux:
 # Hooks — scripts to run at specific lifecycle points.
 # Scripts are resolved relative to the project root.
 # Working directory is set to the worktree path.
-# Environment includes GROVE_BRANCH, GROVE_WORKTREE, GROVE_PROJECT_ROOT,
-# and GROVE_PORT_<SERVICE> (uppercased) for each service with a port.
+# Environment includes a minimal allowlist, optional hooks.env_passthrough,
+# GROVE_BRANCH, GROVE_WORKTREE, GROVE_PROJECT_ROOT, and GROVE_PORT_<SERVICE>
+# (uppercased) for each service with a port. Output is suppressed by default;
+# hook errors never include child output. Scripts must remain inside project root.
+# Timeout cancellation terminates the hook process tree. Set output: stream only
+# when child output is safe to forward; it may contain secrets.
 # post_create scripts run after .env.local files are written, before tmux setup.
 # On post_create failure: a warning is printed, but create continues.
 # pre_delete scripts run after safety checks, before tmux/worktree removal.
-# On pre_delete failure: delete aborts and the worktree is kept.
+# On pre_delete timeout/failure: delete aborts and the worktree is kept.
+# Default timeout is 2m; max timeout is 1h.
 #
 # NOTE: Hook scripts are executed as shell commands — review them before
 # running grove create/delete in an unfamiliar repo, just as you would review
 # a Makefile or docker-compose.yml.
 hooks:
+  timeout: 2m
+  output: summary  # summary (default), stream, or quiet
+  env_passthrough:
+    - CUSTOM_SAFE_ENV
   post_create:
     - scripts/grove-post-create.sh
   pre_delete:
