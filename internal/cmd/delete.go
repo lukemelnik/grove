@@ -137,15 +137,20 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return nil
 	}
 
+	progress := newCommandProgress(cmd)
+	defer progress.Stop()
+
 	// Step 3: Run remote and unpushed safety checks only for a real deletion.
 	expectedBranchTip := ""
 	if !force {
+		progress.Update("Checking branch safety")
 		initialTip, tipErr := wtMgr.BranchTip(branch)
 		if tipErr != nil {
 			return outputError(cmd, newCodedError("delete_branch_tip_check_failed", tipErr))
 		}
 		expectedBranchTip = initialTip
 		if ghAvailable() {
+			progress.Update("Checking open pull requests")
 			hasOpenPR, prNum, checkErr := checkOpenPRs(branch)
 			if checkErr != nil {
 				return outputError(cmd, newCodedError("delete_pr_check_failed", fmt.Errorf("could not check for open PRs — use --force to delete anyway: %w", checkErr)))
@@ -153,9 +158,11 @@ func runDelete(cmd *cobra.Command, args []string) error {
 				return outputError(cmd, newCodedError("delete_blocked_open_pr", fmt.Errorf("branch %q has an open PR (#%s) — use --force to delete anyway", branch, prNum)))
 			}
 		} else {
+			progress.Clear()
 			fmt.Fprintln(cmd.ErrOrStderr(), "Note: skipping PR check — gh not found")
 		}
 
+		progress.Update("Checking for unpushed commits")
 		status, count, err := wtMgr.CheckUnpushed(branch)
 		if err != nil {
 			return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not check for unpushed commits on branch %q — use --force to delete anyway: %w", branch, err)))
@@ -170,6 +177,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 				return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not check whether branch %q has unique commits — use --force to delete anyway: %w", branch, uniqueErr)))
 			}
 			if !hasUnique {
+				progress.Clear()
 				fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch has no unique commits\n")
 				break
 			}
@@ -180,6 +188,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 			if !contentMerged {
 				return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has unique local commits and its deleted remote is not proof of merge — use --force to delete anyway, or preserve/push the commits first", branch)))
 			}
+			progress.Clear()
 			fmt.Fprintf(cmd.ErrOrStderr(), "Note: remote branch was deleted and branch content already in %s\n", defaultBranch)
 		case worktree.UnpushedCommits:
 			// Before blocking, check if the branch content is already in the
@@ -191,6 +200,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 				return outputError(cmd, newCodedError("delete_unpushed_check_failed", fmt.Errorf("could not verify whether branch %q content is merged into %s — use --force to delete anyway: %w", branch, defaultBranch, cherryErr)))
 			}
 			if contentMerged {
+				progress.Clear()
 				fmt.Fprintf(cmd.ErrOrStderr(), "Note: branch content already in %s (merged via rebase)\n", defaultBranch)
 			} else {
 				noun := "commit"
@@ -200,6 +210,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 				return outputError(cmd, newCodedError("delete_blocked_unpushed", fmt.Errorf("branch %q has %d unpushed %s — use --force to delete anyway, or push first with: git push origin %s", branch, count, noun, branch)))
 			}
 		}
+		progress.Update("Revalidating branch safety")
 		afterChecksTip, tipErr := wtMgr.BranchTip(branch)
 		if tipErr != nil {
 			return outputError(cmd, newCodedError("delete_branch_tip_check_failed", tipErr))
@@ -210,10 +221,12 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 4: Serialize persistent assignment, hooks, and destructive cleanup.
+	progress.Update("Waiting for project lock")
 	lock, err := acquireWorkflowLock(cmd.Context(), ctx)
 	if err != nil {
 		return outputError(cmd, err)
 	}
+	progress.Update("Locating worktree")
 	current, currentErr := findWorktreeByBranch(ctx, branch)
 	if currentErr != nil {
 		cleanupErr := reconcilePortRegistry(ctx)
@@ -222,6 +235,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 	wtPath = current.Path
 	if cfg.Hooks != nil && len(cfg.Hooks.PreDelete) > 0 {
+		progress.Update("Preparing pre-delete hooks")
 		assignment, assignErr := assignPersistentPorts(ctx, branch)
 		if assignErr != nil {
 			_ = lock.Release()
@@ -231,6 +245,11 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		hookStdout := cmd.OutOrStdout()
 		if jsonOutput && outputMode == hooks.OutputStream {
 			hookStdout = cmd.ErrOrStderr()
+		}
+		if outputMode == hooks.OutputStream {
+			progress.Clear()
+		} else {
+			progress.Update("Running pre-delete hooks")
 		}
 		hookOpts := hooks.RunOpts{
 			Branch:         branch,
@@ -251,6 +270,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	if !force {
+		progress.Update("Revalidating branch safety")
 		beforeRemovalTip, tipErr := wtMgr.BranchTip(branch)
 		if tipErr != nil {
 			releaseErr := lock.Release()
@@ -264,6 +284,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	// Discover exact Grove-owned tmux IDs while the worktree path still exists,
 	// so path aliases remain comparable after Git removes the directory.
+	progress.Update("Locating tmux workspace")
 	tmuxMgr := tmux.NewManager(tmuxRunnerFactory())
 	tmuxTargets, tmuxDiscoveryErr := tmuxMgr.FindTargets(projectRoot, branch, wtPath)
 	if tmuxDiscoveryErr != nil {
@@ -272,6 +293,11 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	}
 
 	// Step 5: Remove git worktree and optionally delete branch.
+	removeTask := "Removing Git worktree"
+	if deleteBranch {
+		removeTask += " and branch"
+	}
+	progress.Update(removeTask)
 	var result *worktree.RemoveResult
 	var removeErr error
 	if !force {
@@ -284,6 +310,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 		return outputError(cmd, newCodedError("delete_worktree_failed", combineCleanupErrors(fmt.Errorf("removing worktree: %w", removeErr), releaseErr)))
 	}
 
+	progress.Update("Updating project state")
 	var failures []deleteFailure
 	if result != nil && result.WorktreeRemoved {
 		if registryErr := reconcilePortRegistry(ctx); registryErr != nil {
@@ -296,6 +323,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 
 	// Step 6: Remove only the exact IDs proven Grove-owned before deletion.
 	if result != nil && result.WorktreeRemoved {
+		progress.Update("Closing tmux workspace")
 		if _, killErr := tmuxMgr.DestroyTargets(tmuxTargets); killErr != nil {
 			failures = append(failures, deleteFailure{Stage: "tmux", Message: killErr.Error()})
 		}
@@ -303,6 +331,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	if removeErr != nil {
 		failures = append(failures, deleteFailure{Stage: "branch", Message: removeErr.Error()})
 	}
+	progress.Stop()
 
 	out := deleteOutput{
 		Branch:        branch,

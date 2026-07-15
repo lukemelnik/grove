@@ -252,6 +252,8 @@ grove delete feat/auth --keep-branch  # Remove worktree but keep the git branch
 - **Never-pushed branches** — blocks if the branch has no remote tracking branch
 - **Local worktree data** — Grove blocks tracked changes and nonignored untracked files before asking Git to remove the worktree; Gitignored cache/build artifacts are treated as disposable
 
+In an interactive terminal, deletion shows a stage-aware Braille spinner on stderr. Progress animation is disabled for JSON output, redirected stderr, and non-interactive use.
+
 ### `grove list`
 
 List all active worktrees with their branches, paths, and port assignments.
