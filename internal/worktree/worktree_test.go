@@ -293,6 +293,7 @@ func TestManager_Create_LocalBranch(t *testing.T) {
 	git.On("worktree list --porcelain",
 		"worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/auth", "abc123", nil)
+	git.On("rev-parse --verify refs/heads/feat/auth^{commit}", "abc123", nil)
 	git.On("worktree add -- "+path+" feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -317,6 +318,7 @@ func TestManager_Create_RemoteBranch(t *testing.T) {
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/auth", "abc123", nil)
 	git.On("branch --track -- feat/auth origin/feat/auth", "", nil)
+	git.On("rev-parse --verify refs/heads/feat/auth^{commit}", "abc123", nil)
 	git.On("worktree add -- "+path+" feat/auth", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -342,6 +344,7 @@ func TestManager_Create_NewBranch_DefaultBase(t *testing.T) {
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("symbolic-ref refs/remotes/origin/HEAD", "refs/remotes/origin/main", nil)
 	git.On("branch --no-track -- feat/new refs/remotes/origin/main", "", nil)
+	git.On("rev-parse --verify refs/heads/feat/new^{commit}", "base123", nil)
 	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -366,6 +369,7 @@ func TestManager_Create_NewBranch_CustomFrom(t *testing.T) {
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("branch --no-track -- feat/new origin/develop", "", nil)
+	git.On("rev-parse --verify refs/heads/feat/new^{commit}", "base123", nil)
 	git.On("worktree add -- "+path+" feat/new", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -410,6 +414,7 @@ func TestManager_Create_NoOriginUsesLocalDefaultBranch(t *testing.T) {
 	git.On("symbolic-ref refs/remotes/origin/HEAD", "", fmt.Errorf("not found"))
 	git.On("rev-parse --verify refs/heads/main", "abc", nil)
 	git.On("branch --no-track -- feat/local main", "", nil)
+	git.On("rev-parse --verify refs/heads/feat/local^{commit}", "base123", nil)
 	git.On("worktree add -- "+path+" feat/local", "", nil)
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -430,6 +435,7 @@ func TestManager_Create_RollsBackNewBranchWhenWorktreeAddFails(t *testing.T) {
 	git.On("fetch origin", "", nil)
 	git.On("rev-parse --verify refs/remotes/origin/feat/new", "", fmt.Errorf("not found"))
 	git.On("branch --no-track -- feat/new origin/main", "", nil)
+	git.OnSequence("rev-parse --verify refs/heads/feat/new^{commit}", mockResponse{output: "base123", err: nil}, mockResponse{output: "base123", err: nil})
 	git.On("worktree add -- "+path+" feat/new", "", fmt.Errorf("add failed"))
 	git.On("branch -D -- feat/new", "", nil)
 
@@ -448,6 +454,7 @@ func TestManager_Create_DoesNotRollbackPreexistingBranchWhenWorktreeAddFails(t *
 	path := branchPath("/worktrees", "feat/existing")
 	git.On("worktree list --porcelain", "worktree /project\nHEAD abc\nbranch refs/heads/main\n", nil)
 	git.On("rev-parse --verify refs/heads/feat/existing", "", nil)
+	git.On("rev-parse --verify refs/heads/feat/existing^{commit}", "base123", nil)
 	git.On("worktree add -- "+path+" feat/existing", "", fmt.Errorf("add failed"))
 
 	mgr := NewManager(git, "/project", "/worktrees")
@@ -1179,7 +1186,7 @@ func TestIntegration_FindByPath(t *testing.T) {
 
 func TestCheckUnpushed_NoRemote(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "", fmt.Errorf("not found"))
+	mock.On("config --get branch.feat/test.remote", "", fmt.Errorf("not found"))
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")
@@ -1194,10 +1201,42 @@ func TestCheckUnpushed_NoRemote(t *testing.T) {
 	}
 }
 
+func TestCheckUnpushed_LocalUpstreamIsNotRemoteProof(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("config --get branch.feat/test.remote", ".", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedNoRemote || count != 0 {
+		t.Fatalf("CheckUnpushed local upstream = (%v, %d), want (%v, 0)", status, count, UnpushedNoRemote)
+	}
+}
+
+func TestCheckUnpushed_NonRemoteNamespaceIsNotRemoteProof(t *testing.T) {
+	mock := newMockGitRunner()
+	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "refs/heads/feat/test", nil)
+	mgr := NewManager(mock, "/repo", "../.worktrees")
+
+	status, count, err := mgr.CheckUnpushed("feat/test")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != UnpushedNoRemote || count != 0 {
+		t.Fatalf("CheckUnpushed local ref = (%v, %d), want (%v, 0)", status, count, UnpushedNoRemote)
+	}
+}
+
 func TestCheckUnpushed_HasUnpushed(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
-	mock.On("rev-list --count origin/feat/test..feat/test", "3", nil)
+	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "refs/remotes/origin/feat/test", nil)
+	mock.On("rev-list --count refs/remotes/origin/feat/test..feat/test", "3", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")
@@ -1214,8 +1253,10 @@ func TestCheckUnpushed_HasUnpushed(t *testing.T) {
 
 func TestCheckUnpushed_InvalidCountFailsClosed(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
-	mock.On("rev-list --count origin/feat/test..feat/test", "not-a-count", nil)
+	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "refs/remotes/origin/feat/test", nil)
+	mock.On("rev-list --count refs/remotes/origin/feat/test..feat/test", "not-a-count", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	if _, _, err := mgr.CheckUnpushed("feat/test"); err == nil {
@@ -1225,8 +1266,10 @@ func TestCheckUnpushed_InvalidCountFailsClosed(t *testing.T) {
 
 func TestCheckUnpushed_AllPushed(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "origin/feat/test", nil)
-	mock.On("rev-list --count origin/feat/test..feat/test", "0", nil)
+	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "refs/remotes/origin/feat/test", nil)
+	mock.On("rev-list --count refs/remotes/origin/feat/test..feat/test", "0", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")
@@ -1243,10 +1286,9 @@ func TestCheckUnpushed_AllPushed(t *testing.T) {
 
 func TestCheckUnpushed_Gone(t *testing.T) {
 	mock := newMockGitRunner()
-	// Upstream is gone
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "", fmt.Errorf("not found"))
-	// But branch config still has upstream tracking (was pushed before)
 	mock.On("config --get branch.feat/test.remote", "origin", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "", fmt.Errorf("not found"))
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")
@@ -1263,8 +1305,10 @@ func TestCheckUnpushed_Gone(t *testing.T) {
 
 func TestCheckUnpushed_NonOriginUpstream(t *testing.T) {
 	mock := newMockGitRunner()
-	mock.On("rev-parse --abbrev-ref --symbolic-full-name feat/test@{upstream}", "fork/feat/test", nil)
-	mock.On("rev-list --count fork/feat/test..feat/test", "2", nil)
+	mock.On("config --get branch.feat/test.remote", "fork", nil)
+	mock.On("config --get branch.feat/test.merge", "refs/heads/feat/test", nil)
+	mock.On("rev-parse --symbolic-full-name feat/test@{upstream}", "refs/remotes/fork/feat/test", nil)
+	mock.On("rev-list --count refs/remotes/fork/feat/test..feat/test", "2", nil)
 	mgr := NewManager(mock, "/repo", "../.worktrees")
 
 	status, count, err := mgr.CheckUnpushed("feat/test")

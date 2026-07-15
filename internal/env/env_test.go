@@ -180,6 +180,44 @@ func TestParseEnvFile_NotFound(t *testing.T) {
 	}
 }
 
+func TestIsManagedWorktreePath(t *testing.T) {
+	projectRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	cfg := &config.Config{EnvFiles: []string{"config/runtime"}}
+
+	for _, root := range []string{projectRoot, worktreePath} {
+		if err := os.MkdirAll(filepath.Join(root, "config"), 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := filepath.Join(projectRoot, "config", "runtime")
+	if err := os.WriteFile(source, []byte("BASE=1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(worktreePath, "config", "runtime")
+	target, err := filepath.Rel(filepath.Dir(link), source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(worktreePath, "config", "runtime.local")
+	if err := os.WriteFile(local, []byte(generatedEnvLocalMarker+"PORT=4001\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if !IsManagedWorktreePath(cfg, projectRoot, worktreePath, "config/runtime") {
+		t.Fatal("canonical env symlink should be recognized as Grove-owned")
+	}
+	if !IsManagedWorktreePath(cfg, projectRoot, worktreePath, "config/runtime.local") {
+		t.Fatal("marker-owned generated local should be recognized as Grove-owned")
+	}
+	if IsManagedWorktreePath(cfg, projectRoot, worktreePath, "config/user-data") {
+		t.Fatal("unconfigured user data must not be recognized as Grove-owned")
+	}
+}
+
 func TestResolveTemplates_Basic(t *testing.T) {
 	ports := map[string]int{
 		"api": 4045,

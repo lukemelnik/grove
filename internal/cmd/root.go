@@ -58,7 +58,7 @@ Agent workflow:
   Use grove open <branch> only when asked to open or restore the full tmux UI
   Avoid grove enter and interactive grove list unless explicitly asked
   Do not pass --force to delete/clean without explicit user approval
-  Never pass clean --discard-changes without explicit approval to discard dirty work`,
+  Never pass clean --discard-changes without explicit approval to discard local worktree data`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}

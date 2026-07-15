@@ -131,9 +131,6 @@ func runCreate(cmd *cobra.Command, args []string) error {
 		releaseErr := releaseLock()
 		return outputError(cmd, newCodedError("create_env_failed", combineCleanupErrors(err, cleanupErr, releaseErr)))
 	}
-	if err := releaseLock(); err != nil {
-		return outputError(cmd, newCodedError("project_lock_release_failed", fmt.Errorf("releasing project mutation lock; created resources were retained: %w", err)))
-	}
 
 	postCreateHooksRan := ctx.Config.Hooks != nil && len(ctx.Config.Hooks.PostCreate) > 0
 	if postCreateHooksRan {
@@ -159,6 +156,9 @@ func runCreate(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(cmd.ErrOrStderr(), "Warning: %s\n", w)
 			}
 		}
+	}
+	if err := releaseLock(); err != nil {
+		return outputError(cmd, newCodedError("project_lock_release_failed", fmt.Errorf("releasing project mutation lock; created resources were retained: %w", err)))
 	}
 
 	if provisionOnly {
@@ -206,7 +206,15 @@ func runCreate(cmd *cobra.Command, args []string) error {
 func rollbackCreatedResourcesLocked(ctx *projectContext, result *worktree.CreateResult) error {
 	var cleanupErr error
 	if result != nil && (result.WorktreeCreated || result.BranchCreated) {
-		if _, err := ctx.Worktrees.Remove(result.Branch, result.BranchCreated, true); err != nil {
+		if result.InitialBranchTip == "" {
+			cleanupErr = fmt.Errorf("rolling back created resources: initial branch tip is unknown; worktree and branch retained")
+		} else if _, err := ctx.Worktrees.RemoveIfBranchTipWithPolicy(
+			result.Branch,
+			result.BranchCreated,
+			false,
+			result.InitialBranchTip,
+			managedRemovalPolicy(ctx),
+		); err != nil {
 			cleanupErr = fmt.Errorf("rolling back created resources: %w", err)
 		}
 	}

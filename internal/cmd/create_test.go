@@ -666,6 +666,60 @@ func tmuxCommandSeen(runner *recordingTmuxRunner, name string) bool {
 	return false
 }
 
+func TestCreateCmd_EnvFailurePreservesPostCheckoutHookCommit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/runtime
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "runtime"), []byte("BASE=1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", "config/runtime")
+	gitRun(t, repoDir, "commit", "-m", "track runtime fixture")
+
+	hookPath := filepath.Join(repoDir, ".git", "hooks", "post-checkout")
+	hookScript := `#!/bin/sh
+set -e
+printf 'created by native git hook\n' > hook-created.txt
+git add hook-created.txt
+git commit -m 'post-checkout hook work'
+`
+	if err := os.WriteFile(hookPath, []byte(hookScript), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"create", "feat/post-checkout-work", "--no-open"})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected tracked env collision\nOutput: %s", buf.String())
+	}
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/post-checkout-work")
+	if data, err := os.ReadFile(filepath.Join(wtPath, "hook-created.txt")); err != nil || string(data) != "created by native git hook\n" {
+		t.Fatalf("post-checkout work was not preserved: data=%q err=%v", data, err)
+	}
+	logCmd := exec.Command("git", "log", "-1", "--format=%s", "feat/post-checkout-work")
+	logCmd.Dir = repoDir
+	logOut, err := logCmd.Output()
+	if err != nil || strings.TrimSpace(string(logOut)) != "post-checkout hook work" {
+		t.Fatalf("post-checkout commit was not preserved: output=%q err=%v", logOut, err)
+	}
+}
+
 func TestCreateCmd_ReusedWorktreeEnvCollisionFailsBeforeHooksAndTmux(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
@@ -763,7 +817,7 @@ hooks:
 	if err := os.MkdirAll(filepath.Join(repoDir, "scripts"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	hookScript := "#!/bin/sh\necho \"$GROVE_BRANCH\" > \"$GROVE_WORKTREE/hook-ran.txt\"\n"
+	hookScript := "#!/bin/sh\n[ -d \"$GROVE_PROJECT_ROOT/.git/grove/mutation.lock\" ] || exit 42\necho \"$GROVE_BRANCH\" > \"$GROVE_WORKTREE/hook-ran.txt\"\n"
 	if err := os.WriteFile(filepath.Join(repoDir, "scripts", "post-create.sh"), []byte(hookScript), 0755); err != nil {
 		t.Fatal(err)
 	}

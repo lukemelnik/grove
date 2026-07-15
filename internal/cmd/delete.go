@@ -275,7 +275,7 @@ func runDelete(cmd *cobra.Command, args []string) error {
 	var result *worktree.RemoveResult
 	var removeErr error
 	if !force {
-		result, removeErr = wtMgr.RemoveIfBranchTip(branch, deleteBranch, false, expectedBranchTip)
+		result, removeErr = wtMgr.RemoveIfBranchTipWithPolicy(branch, deleteBranch, false, expectedBranchTip, managedRemovalPolicy(ctx))
 	} else {
 		result, removeErr = wtMgr.Remove(branch, deleteBranch, true)
 	}

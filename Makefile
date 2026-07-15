@@ -3,7 +3,7 @@ MODULE := $(shell go list -m)
 VERSION ?= $(shell { git describe --tags --match 'v*' --dirty --always 2>/dev/null || echo dev; } | sed 's/^v//')
 LDFLAGS := -s -w -X $(MODULE)/internal/cmd.Version=$(VERSION)
 
-.PHONY: build install test clean version release-check release release-patch release-minor release-major
+.PHONY: build install test test-install clean version release-check release release-patch release-minor release-major
 
 build:
 	go build -trimpath -ldflags "$(LDFLAGS)" -o grove ./cmd/grove
@@ -13,6 +13,10 @@ install: build
 
 test:
 	go test ./... -count=1
+	$(MAKE) test-install
+
+test-install:
+	bash scripts/install_test.sh
 
 version:
 	@printf '%s\n' '$(VERSION)'
