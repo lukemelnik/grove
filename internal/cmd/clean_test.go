@@ -283,7 +283,7 @@ func TestCleanCmd_ForcePreservesDirtyStaleWorktree(t *testing.T) {
 	}
 }
 
-func TestCleanCmd_ForcePreservesIgnoredStaleWorktreeData(t *testing.T) {
+func TestCleanCmd_ForceAllowsIgnoredBuildCache(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
 	}
@@ -292,19 +292,19 @@ func TestCleanCmd_ForcePreservesIgnoredStaleWorktreeData(t *testing.T) {
 	groveYML := `worktree_dir: ` + worktreeDir + "\n"
 	repoDir := setupCreateTestRepo(t, groveYML)
 
-	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("local-data/\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte(".turbo/\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, repoDir, "add", ".gitignore")
-	gitRun(t, repoDir, "commit", "-m", "ignore local data")
+	gitRun(t, repoDir, "commit", "-m", "ignore build cache")
 	gitRun(t, repoDir, "branch", "feat/ignored-force")
 	wtPath := filepath.Join(worktreeDir, "feat-ignored-force")
 	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/ignored-force")
-	ignoredFile := filepath.Join(wtPath, "local-data", "database.sqlite")
-	if err := os.MkdirAll(filepath.Dir(ignoredFile), 0755); err != nil {
+	cacheFile := filepath.Join(wtPath, ".turbo", "cache", "build-meta.json")
+	if err := os.MkdirAll(filepath.Dir(cacheFile), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(ignoredFile, []byte("keep me\n"), 0644); err != nil {
+	if err := os.WriteFile(cacheFile, []byte("cache\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -318,14 +318,14 @@ func TestCleanCmd_ForcePreservesIgnoredStaleWorktreeData(t *testing.T) {
 	rootCmd.SetErr(&buf)
 	rootCmd.SetArgs([]string{"clean", "--force"})
 
-	if err := rootCmd.Execute(); err == nil {
-		t.Fatalf("expected clean --force to preserve ignored data\nOutput: %s", buf.String())
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("ignored build cache should not block clean --force: %v\nOutput: %s", err, buf.String())
 	}
-	if data, err := os.ReadFile(ignoredFile); err != nil || string(data) != "keep me\n" {
-		t.Fatalf("ignored data changed: data=%q err=%v", data, err)
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("worktree with only ignored cache should be removed, stat err=%v", err)
 	}
-	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/ignored-force").CombinedOutput(); err != nil {
-		t.Fatal("branch should remain after ignored-data refusal")
+	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/ignored-force").CombinedOutput(); err == nil {
+		t.Fatal("branch should be removed with ignored build cache")
 	}
 }
 
