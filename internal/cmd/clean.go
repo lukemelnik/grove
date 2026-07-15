@@ -60,7 +60,7 @@ the git worktree is removed, and the local branch is deleted.`,
 
 	cmd.Flags().Bool("dry-run", false, "show what would be cleaned without doing it")
 	cmd.Flags().Bool("force", false, "skip confirmation prompt")
-	cmd.Flags().Bool("discard-changes", false, "skip confirmation and discard tracked, untracked, and ignored stale-worktree data")
+	cmd.Flags().Bool("discard-changes", false, "skip confirmation and discard tracked and nonignored untracked stale-worktree data")
 	cmd.Flags().Bool("all", false, "also include gone branches that still have unique commits")
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 

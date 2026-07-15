@@ -250,7 +250,7 @@ grove delete feat/auth --keep-branch  # Remove worktree but keep the git branch
 - **Open PRs** — checks via `gh` CLI (if available)
 - **Unpushed commits** — blocks if the branch has local commits not on the remote
 - **Never-pushed branches** — blocks if the branch has no remote tracking branch
-- **Local worktree data** — Grove blocks tracked changes and non-Grove untracked or ignored files before asking Git to remove the worktree
+- **Local worktree data** — Grove blocks tracked changes and nonignored untracked files before asking Git to remove the worktree; Gitignored cache/build artifacts are treated as disposable
 
 ### `grove list`
 
@@ -300,11 +300,11 @@ Batch cleanup of stale worktrees. Each branch is labeled with a reason:
 grove clean              # Interactive — shows safe stale worktrees, asks for confirmation
 grove clean --dry-run    # Just show what would be cleaned
 grove clean --all        # Also include deleted-remote branches that still have unique commits
-grove clean --force      # Skip confirmation, but preserve dirty and ignored worktree data
-grove clean --discard-changes  # Skip confirmation and explicitly discard local stale-worktree data
+grove clean --force      # Skip confirmation; preserve tracked/nonignored work while removing ignored caches
+grove clean --discard-changes  # Skip confirmation and explicitly discard all stale-worktree data
 ```
 
-For each stale worktree, grove kills the managed tmux target, removes the worktree, deletes the local branch, and prunes git worktree metadata. `clean --force` only bypasses confirmation; it does not discard tracked changes or non-Grove untracked/ignored files. Use `clean --discard-changes` only when you explicitly want Git to discard local stale-worktree data. `clean` and `delete` return nonzero on partial failures instead of reporting success.
+For each stale worktree, grove kills the managed tmux target, removes the worktree, deletes the local branch, and prunes git worktree metadata. `clean --force` only bypasses confirmation; it still preserves tracked changes and nonignored untracked files. Files matched by repository ignore rules—such as build output and caches—are treated as disposable and removed during normal cleanup. Use `clean --discard-changes` only when you explicitly want Git to discard all local stale-worktree data. `clean` and `delete` return nonzero on partial failures instead of reporting success.
 
 ### `grove status`
 
@@ -613,7 +613,7 @@ Agent rules:
 - Do not pass `--force` to `delete` or `clean` without explicit user approval.
 - Never pass `grove clean --discard-changes` unless the user explicitly approves discarding dirty worktrees.
 
-**Safe mutations** — `grove clean --dry-run` and `grove delete --dry-run` preview before acting. Create rollback preserves the worktree and branch if checkout hooks changed the branch or produced non-Grove local data; any tmux setup failure also retains them. Delete and clean revalidate branch tips and reject tracked changes plus non-Grove untracked/ignored files immediately before removal. `clean --force` skips prompts only after explicit approval; `clean --discard-changes` is the explicit local-data removal flag. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
+**Safe mutations** — `grove clean --dry-run` and `grove delete --dry-run` preview before acting. Create rollback preserves the worktree and branch if checkout hooks changed the branch or produced non-Grove, nonignored local data; any tmux setup failure also retains them. Delete and clean revalidate branch tips and reject tracked changes plus nonignored untracked files immediately before removal; Gitignored cache/build artifacts are removed normally. `clean --force` skips prompts only after explicit approval; `clean --discard-changes` is the explicit all-local-data removal flag. JSON errors use `{ "error": { "code": "...", "message": "..." } }`.
 
 ## Example Configs
 

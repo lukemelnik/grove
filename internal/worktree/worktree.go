@@ -588,33 +588,26 @@ func (m *Manager) validateRemovalPaths(worktreePath string, policy RemovalPathPo
 		return err
 	}
 
-	commands := [][]string{
-		{"-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"},
-		{"-C", worktreePath, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"},
+	untrackedArgs := []string{"-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"}
+	untracked, err := m.git.Run(untrackedArgs...)
+	if err != nil {
+		return fmt.Errorf("checking untracked worktree files: %w", err)
 	}
-	seen := map[string]bool{}
 	var managedPaths []string
-	for _, args := range commands {
-		out, err := m.git.Run(args...)
-		if err != nil {
-			return fmt.Errorf("checking untracked and ignored worktree files: %w", err)
+	for _, path := range strings.Split(untracked, "\x00") {
+		if path == "" {
+			continue
 		}
-		for _, path := range strings.Split(out, "\x00") {
-			if path == "" || seen[path] {
-				continue
-			}
-			seen[path] = true
-			if !policy(worktreePath, filepath.FromSlash(path)) {
-				return fmt.Errorf("refusing to remove worktree with non-Grove untracked or ignored path %q", path)
-			}
-			managedPaths = append(managedPaths, path)
+		if !policy(worktreePath, filepath.FromSlash(path)) {
+			return fmt.Errorf("refusing to remove worktree with non-Grove untracked path %q", path)
 		}
+		managedPaths = append(managedPaths, path)
 	}
 
-	// Git intentionally treats ignored files as disposable, but refuses other
-	// untracked files without --force. Remove only the exact Grove-owned files
-	// proven above, then keep Git's own non-force cleanliness check as a final
-	// defense against files that appear concurrently.
+	// Repository ignore rules declare cache/build artifacts disposable. Git
+	// removes those during its normal non-force worktree removal. Remove only
+	// nonignored untracked files proven Grove-owned, then keep Git's cleanliness
+	// check as a final defense against concurrent tracked or untracked work.
 	for _, path := range managedPaths {
 		rel := filepath.FromSlash(path)
 		if !policy(worktreePath, rel) {
@@ -628,14 +621,12 @@ func (m *Manager) validateRemovalPaths(worktreePath string, policy RemovalPathPo
 	if err := checkTracked(); err != nil {
 		return err
 	}
-	for _, args := range commands {
-		out, err := m.git.Run(args...)
-		if err != nil {
-			return fmt.Errorf("rechecking untracked and ignored worktree files: %w", err)
-		}
-		if out != "" {
-			return fmt.Errorf("worktree changed during removal safety validation; refusing removal")
-		}
+	untracked, err = m.git.Run(untrackedArgs...)
+	if err != nil {
+		return fmt.Errorf("rechecking untracked worktree files: %w", err)
+	}
+	if untracked != "" {
+		return fmt.Errorf("worktree changed during removal safety validation; refusing removal")
 	}
 	return nil
 }
