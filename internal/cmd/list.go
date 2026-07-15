@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -250,6 +251,11 @@ func dispatchListAction(cmd *cobra.Command, action listPickerAction, branch stri
 			return nil
 		}
 		deleteCmd := newDeleteCmd()
+		deleteCtx := cmd.Context()
+		if deleteCtx == nil {
+			deleteCtx = context.Background()
+		}
+		deleteCmd.SetContext(deleteCtx)
 		deleteCmd.SetOut(cmd.OutOrStdout())
 		deleteCmd.SetErr(cmd.ErrOrStderr())
 		return runDelete(deleteCmd, []string{branch})
