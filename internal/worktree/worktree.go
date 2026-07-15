@@ -145,6 +145,9 @@ type CreateResult struct {
 	WorktreeCreated bool
 	// BranchCreated is true if this invocation created a local branch.
 	BranchCreated bool
+	// InitialBranchTip is the branch tip immediately before worktree checkout
+	// and any repository post-checkout hook side effects.
+	InitialBranchTip string
 }
 
 // Manager handles worktree operations.
@@ -198,10 +201,19 @@ func (m *Manager) Create(branch, fromRef string) (*CreateResult, error) {
 		return nil, fmt.Errorf("resolving branch %q: %w", branch, err)
 	}
 
+	initialTip, err := m.branchTipForCheckout(branch)
+	if err != nil {
+		return nil, fmt.Errorf("capturing branch tip before worktree checkout; branch retained: %w", err)
+	}
+
 	// Create the worktree (-- separates options from positional args)
 	_, err = m.git.Run("worktree", "add", "--", wtPath, branch)
 	if err != nil {
 		if branchCreated {
+			currentTip, tipErr := m.branchTipForCheckout(branch)
+			if tipErr != nil || currentTip != initialTip {
+				return nil, fmt.Errorf("creating worktree at %s: %w (new branch %q retained because its tip could not be proven unchanged)", wtPath, err, branch)
+			}
 			if _, deleteErr := m.git.Run("branch", "-D", "--", branch); deleteErr != nil {
 				return nil, fmt.Errorf("creating worktree at %s: %w (rollback deleting branch %q failed: %v)", wtPath, err, branch, deleteErr)
 			}
@@ -210,12 +222,13 @@ func (m *Manager) Create(branch, fromRef string) (*CreateResult, error) {
 	}
 
 	return &CreateResult{
-		Path:            wtPath,
-		Branch:          branch,
-		Resolution:      resolution,
-		Created:         true,
-		WorktreeCreated: true,
-		BranchCreated:   branchCreated,
+		Path:             wtPath,
+		Branch:           branch,
+		Resolution:       resolution,
+		Created:          true,
+		WorktreeCreated:  true,
+		BranchCreated:    branchCreated,
+		InitialBranchTip: initialTip,
 	}, nil
 }
 
@@ -385,6 +398,18 @@ type RemoveResult struct {
 	BranchDeleteError error
 }
 
+func (m *Manager) branchTipForCheckout(branch string) (string, error) {
+	out, err := m.git.Run("rev-parse", "--verify", "refs/heads/"+branch+"^{commit}")
+	if err != nil {
+		return "", fmt.Errorf("reading branch %q tip before checkout: %w", branch, err)
+	}
+	tip := strings.TrimSpace(out)
+	if tip == "" {
+		return "", fmt.Errorf("reading branch %q tip before checkout: empty output", branch)
+	}
+	return tip, nil
+}
+
 // BranchTip returns the current object ID for a local branch ref.
 func (m *Manager) BranchTip(branch string) (string, error) {
 	out, err := m.git.Run("rev-parse", "--verify", "refs/heads/"+branch)
@@ -405,19 +430,29 @@ func (m *Manager) BranchTip(branch string) (string, error) {
 // If git doesn't recognize the path as a worktree (e.g. leftover directory after
 // metadata was pruned), it prunes stale metadata and removes the directory directly.
 func (m *Manager) Remove(branch string, deleteBranch, force bool) (*RemoveResult, error) {
-	return m.remove(branch, deleteBranch, force, "")
+	return m.remove(branch, deleteBranch, force, "", nil)
 }
+
+// RemovalPathPolicy decides whether one untracked or ignored worktree path is
+// proven tool-owned and may be discarded during an otherwise safe removal.
+type RemovalPathPolicy func(worktreePath, relativePath string) bool
 
 // RemoveIfBranchTip removes a worktree only while the branch remains at expectedTip.
 // It verifies the tip before worktree removal and again before branch deletion.
 func (m *Manager) RemoveIfBranchTip(branch string, deleteBranch, force bool, expectedTip string) (*RemoveResult, error) {
+	return m.RemoveIfBranchTipWithPolicy(branch, deleteBranch, force, expectedTip, nil)
+}
+
+// RemoveIfBranchTipWithPolicy additionally rejects tracked changes and every
+// untracked or ignored path not explicitly proven removable by policy.
+func (m *Manager) RemoveIfBranchTipWithPolicy(branch string, deleteBranch, force bool, expectedTip string, policy RemovalPathPolicy) (*RemoveResult, error) {
 	if strings.TrimSpace(expectedTip) == "" {
 		return nil, fmt.Errorf("expected branch tip is required for checked removal")
 	}
-	return m.remove(branch, deleteBranch, force, strings.TrimSpace(expectedTip))
+	return m.remove(branch, deleteBranch, force, strings.TrimSpace(expectedTip), policy)
 }
 
-func (m *Manager) remove(branch string, deleteBranch, force bool, expectedTip string) (*RemoveResult, error) {
+func (m *Manager) remove(branch string, deleteBranch, force bool, expectedTip string, policy RemovalPathPolicy) (*RemoveResult, error) {
 	wtPath, registered := m.resolveWorktreePath(branch)
 	result := &RemoveResult{}
 
@@ -428,6 +463,21 @@ func (m *Manager) remove(branch string, deleteBranch, force bool, expectedTip st
 		}
 		if currentTip != expectedTip {
 			return nil, fmt.Errorf("branch %q changed from %s to %s before worktree removal; aborting", branch, expectedTip, currentTip)
+		}
+	}
+
+	if !force && policy != nil {
+		if err := m.validateRemovalPaths(wtPath, policy); err != nil {
+			return nil, err
+		}
+		if expectedTip != "" {
+			currentTip, err := m.BranchTip(branch)
+			if err != nil {
+				return nil, err
+			}
+			if currentTip != expectedTip {
+				return nil, fmt.Errorf("branch %q changed during worktree safety validation; aborting", branch)
+			}
 		}
 	}
 
@@ -521,6 +571,73 @@ func (m *Manager) remove(branch string, deleteBranch, force bool, expectedTip st
 	}
 
 	return result, nil
+}
+
+func (m *Manager) validateRemovalPaths(worktreePath string, policy RemovalPathPolicy) error {
+	checkTracked := func() error {
+		tracked, err := m.git.Run("--no-optional-locks", "-C", worktreePath, "status", "--porcelain=v1", "-z", "--untracked-files=no", "--ignore-submodules=none")
+		if err != nil {
+			return fmt.Errorf("checking tracked worktree changes: %w", err)
+		}
+		if tracked != "" {
+			return fmt.Errorf("refusing to remove worktree with uncommitted tracked changes")
+		}
+		return nil
+	}
+	if err := checkTracked(); err != nil {
+		return err
+	}
+
+	commands := [][]string{
+		{"-C", worktreePath, "ls-files", "--others", "--exclude-standard", "-z"},
+		{"-C", worktreePath, "ls-files", "--others", "--ignored", "--exclude-standard", "-z"},
+	}
+	seen := map[string]bool{}
+	var managedPaths []string
+	for _, args := range commands {
+		out, err := m.git.Run(args...)
+		if err != nil {
+			return fmt.Errorf("checking untracked and ignored worktree files: %w", err)
+		}
+		for _, path := range strings.Split(out, "\x00") {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			if !policy(worktreePath, filepath.FromSlash(path)) {
+				return fmt.Errorf("refusing to remove worktree with non-Grove untracked or ignored path %q", path)
+			}
+			managedPaths = append(managedPaths, path)
+		}
+	}
+
+	// Git intentionally treats ignored files as disposable, but refuses other
+	// untracked files without --force. Remove only the exact Grove-owned files
+	// proven above, then keep Git's own non-force cleanliness check as a final
+	// defense against files that appear concurrently.
+	for _, path := range managedPaths {
+		rel := filepath.FromSlash(path)
+		if !policy(worktreePath, rel) {
+			return fmt.Errorf("managed path %q changed during removal safety validation", path)
+		}
+		if err := os.Remove(filepath.Join(worktreePath, rel)); err != nil {
+			return fmt.Errorf("removing Grove-owned worktree path %q: %w", path, err)
+		}
+	}
+
+	if err := checkTracked(); err != nil {
+		return err
+	}
+	for _, args := range commands {
+		out, err := m.git.Run(args...)
+		if err != nil {
+			return fmt.Errorf("rechecking untracked and ignored worktree files: %w", err)
+		}
+		if out != "" {
+			return fmt.Errorf("worktree changed during removal safety validation; refusing removal")
+		}
+	}
+	return nil
 }
 
 func (m *Manager) resolveWorktreePath(branch string) (string, bool) {
@@ -642,24 +759,32 @@ const (
 // that were never pushed (UnpushedNoRemote) and branches whose remote was
 // deleted after a merge (UnpushedGone) by checking git branch config.
 func (m *Manager) CheckUnpushed(branch string) (UnpushedStatus, int, error) {
-	upstream, err := m.git.Run("rev-parse", "--abbrev-ref", "--symbolic-full-name", branch+"@{upstream}")
-	if err != nil {
-		// No resolvable upstream. Check if the branch previously had upstream
-		// config — this means it was pushed/tracked before but the remote branch
-		// was deleted (e.g. GitHub auto-delete after PR merge).
-		remote, configErr := m.git.Run("config", "--get", "branch."+branch+".remote")
-		if configErr == nil && strings.TrimSpace(remote) != "" {
-			return UnpushedGone, 0, nil
-		}
+	remote, remoteErr := m.git.Run("config", "--get", "branch."+branch+".remote")
+	remote = strings.TrimSpace(remote)
+	if remoteErr != nil || remote == "" || remote == "." {
 		return UnpushedNoRemote, 0, nil
+	}
+	mergeRef, mergeErr := m.git.Run("config", "--get", "branch."+branch+".merge")
+	if mergeErr != nil || strings.TrimSpace(mergeRef) == "" {
+		return UnpushedNoRemote, 0, nil
+	}
+
+	upstream, err := m.git.Run("rev-parse", "--symbolic-full-name", branch+"@{upstream}")
+	if err != nil {
+		// A real configured remote plus merge ref with no resolvable local
+		// remote-tracking ref indicates a previously tracked, now-gone branch.
+		return UnpushedGone, 0, nil
 	}
 
 	upstream = strings.TrimSpace(upstream)
-	if upstream == "" {
+	expectedPrefix := "refs/remotes/" + remote + "/"
+	if upstream == "" || !strings.HasPrefix(upstream, expectedPrefix) {
+		// Local upstreams and custom non-remote namespaces are not proof that
+		// any commit exists outside this repository.
 		return UnpushedNoRemote, 0, nil
 	}
 
-	// Count commits ahead of the branch's configured upstream.
+	// Count commits ahead of the validated remote-tracking upstream.
 	out, err := m.git.Run("rev-list", "--count", upstream+".."+branch)
 	if err != nil {
 		return 0, 0, fmt.Errorf("counting unpushed commits: %w", err)

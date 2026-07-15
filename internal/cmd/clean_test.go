@@ -283,6 +283,104 @@ func TestCleanCmd_ForcePreservesDirtyStaleWorktree(t *testing.T) {
 	}
 }
 
+func TestCleanCmd_ForcePreservesIgnoredStaleWorktreeData(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+
+	if err := os.WriteFile(filepath.Join(repoDir, ".gitignore"), []byte("local-data/\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, repoDir, "add", ".gitignore")
+	gitRun(t, repoDir, "commit", "-m", "ignore local data")
+	gitRun(t, repoDir, "branch", "feat/ignored-force")
+	wtPath := filepath.Join(worktreeDir, "feat-ignored-force")
+	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/ignored-force")
+	ignoredFile := filepath.Join(wtPath, "local-data", "database.sqlite")
+	if err := os.MkdirAll(filepath.Dir(ignoredFile), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ignoredFile, []byte("keep me\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	rootCmd := NewRootCmd()
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs([]string{"clean", "--force"})
+
+	if err := rootCmd.Execute(); err == nil {
+		t.Fatalf("expected clean --force to preserve ignored data\nOutput: %s", buf.String())
+	}
+	if data, err := os.ReadFile(ignoredFile); err != nil || string(data) != "keep me\n" {
+		t.Fatalf("ignored data changed: data=%q err=%v", data, err)
+	}
+	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/feat/ignored-force").CombinedOutput(); err != nil {
+		t.Fatal("branch should remain after ignored-data refusal")
+	}
+}
+
+func TestCleanCmd_AllowsOnlyGroveOwnedEnvArtifacts(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := `worktree_dir: ` + worktreeDir + `
+env_files:
+  - config/runtime
+env:
+  GROVE_TEST_BRANCH: "{{branch}}"
+`
+	repoDir := setupCreateTestRepo(t, groveYML)
+	if err := os.MkdirAll(filepath.Join(repoDir, "config"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoDir, "config", "runtime"), []byte("BASE=1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	mockTerminal(t)
+	mockWorkingDir(t, repoDir)
+	mockTmuxRunner(t)
+
+	createCmd := NewRootCmd()
+	createCmd.SetOut(&bytes.Buffer{})
+	createCmd.SetErr(&bytes.Buffer{})
+	createCmd.SetArgs([]string{"create", "feat/managed-clean", "--no-open"})
+	if err := createCmd.Execute(); err != nil {
+		t.Fatalf("creating managed worktree: %v", err)
+	}
+	wtPath := worktree.WorktreePath(repoDir, worktreeDir, "feat/managed-clean")
+	if _, err := os.Lstat(filepath.Join(wtPath, "config", "runtime")); err != nil {
+		t.Fatalf("managed symlink missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "config", "runtime.local")); err != nil {
+		t.Fatalf("managed local missing: %v", err)
+	}
+
+	cleanCmd := NewRootCmd()
+	var buf bytes.Buffer
+	cleanCmd.SetOut(&buf)
+	cleanCmd.SetErr(&buf)
+	cleanCmd.SetArgs([]string{"clean", "--force"})
+	if err := cleanCmd.Execute(); err != nil {
+		t.Fatalf("clean rejected Grove-owned artifacts: %v\nOutput: %s", err, buf.String())
+	}
+	if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
+		t.Fatalf("managed worktree should be removed, stat err=%v", err)
+	}
+}
+
 func TestCleanCmd_DiscardChangesRemovesDirtyStaleWorktree(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")

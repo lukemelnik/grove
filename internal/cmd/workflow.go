@@ -223,6 +223,12 @@ func readPortAssignment(pc *projectContext, branch string) (*ports.Assignment, e
 	return assignment, nil
 }
 
+func managedRemovalPolicy(pc *projectContext) worktree.RemovalPathPolicy {
+	return func(worktreePath, relativePath string) bool {
+		return env.IsManagedWorktreePath(pc.Config, pc.ProjectRoot, worktreePath, relativePath)
+	}
+}
+
 func reconcilePortRegistry(pc *projectContext) error {
 	if len(pc.Config.Services) == 0 {
 		if _, err := os.Stat(ports.StorePath(pc.CommonStateDir)); errors.Is(err, os.ErrNotExist) {

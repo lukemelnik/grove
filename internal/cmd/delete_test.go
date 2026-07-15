@@ -281,7 +281,15 @@ git commit -m 'hook creates work'
 	gitRun(t, repoDir, "add", "scripts/commit-pre-delete.sh")
 	gitRun(t, repoDir, "commit", "-m", "add committing pre-delete hook")
 	gitRun(t, repoDir, "branch", "feat/pre-delete-commit")
-	gitRun(t, repoDir, "branch", "--set-upstream-to=main", "feat/pre-delete-commit")
+	tipCmd := exec.Command("git", "rev-parse", "refs/heads/feat/pre-delete-commit")
+	tipCmd.Dir = repoDir
+	tipOut, tipErr := tipCmd.Output()
+	if tipErr != nil {
+		t.Fatalf("reading test branch tip: %v", tipErr)
+	}
+	gitRun(t, repoDir, "update-ref", "refs/remotes/origin/feat/pre-delete-commit", strings.TrimSpace(string(tipOut)))
+	gitRun(t, repoDir, "config", "branch.feat/pre-delete-commit.remote", "origin")
+	gitRun(t, repoDir, "config", "branch.feat/pre-delete-commit.merge", "refs/heads/feat/pre-delete-commit")
 	wtPath := filepath.Join(worktreeDir, "feat-pre-delete-commit")
 	gitRun(t, repoDir, "worktree", "add", wtPath, "feat/pre-delete-commit")
 

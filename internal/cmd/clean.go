@@ -60,7 +60,7 @@ the git worktree is removed, and the local branch is deleted.`,
 
 	cmd.Flags().Bool("dry-run", false, "show what would be cleaned without doing it")
 	cmd.Flags().Bool("force", false, "skip confirmation prompt")
-	cmd.Flags().Bool("discard-changes", false, "skip confirmation and remove dirty stale worktrees")
+	cmd.Flags().Bool("discard-changes", false, "skip confirmation and discard tracked, untracked, and ignored stale-worktree data")
 	cmd.Flags().Bool("all", false, "also include gone branches that still have unique commits")
 	cmd.Flags().Bool("json", false, "output as JSON (agent-friendly)")
 
@@ -179,7 +179,7 @@ func runClean(cmd *cobra.Command, args []string) error {
 			}
 			continue
 		}
-		result, err := wtMgr.RemoveIfBranchTip(s.Branch, true, discardChanges, expectedTip)
+		result, err := wtMgr.RemoveIfBranchTipWithPolicy(s.Branch, true, discardChanges, expectedTip, managedRemovalPolicy(ctx))
 		if err != nil && (result == nil || !result.WorktreeRemoved) {
 			_ = lock.Release()
 			failures = append(failures, cleanFailure{Branch: s.Branch, Worktree: s.Worktree, Stage: "worktree", Message: err.Error()})
