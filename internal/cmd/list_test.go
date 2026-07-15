@@ -316,6 +316,59 @@ func TestListCmd_InteractivePickerDispatchesAction(t *testing.T) {
 	}
 }
 
+func TestListCmd_InteractiveDeletePropagatesCommandContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test")
+	}
+
+	worktreeDir := t.TempDir()
+	groveYML := "worktree_dir: " + worktreeDir + "\n"
+	repoDir := setupCreateTestRepo(t, groveYML)
+	branch := "feat/list-delete"
+	gitRun(t, repoDir, "branch", branch)
+	tipCmd := exec.Command("git", "rev-parse", "refs/heads/"+branch)
+	tipCmd.Dir = repoDir
+	tipOut, err := tipCmd.Output()
+	if err != nil {
+		t.Fatalf("reading branch tip: %v", err)
+	}
+	gitRun(t, repoDir, "update-ref", "refs/remotes/origin/"+branch, strings.TrimSpace(string(tipOut)))
+	gitRun(t, repoDir, "config", "branch."+branch+".remote", "origin")
+	gitRun(t, repoDir, "config", "branch."+branch+".merge", "refs/heads/"+branch)
+	wtPath := filepath.Join(worktreeDir, "feat-list-delete")
+	gitRun(t, repoDir, "worktree", "add", wtPath, branch)
+
+	mockWorkingDir(t, repoDir)
+	mockTerminal(t)
+	mockTmuxRunner(t)
+
+	origGhAvailable := ghAvailable
+	ghAvailable = func() bool { return false }
+	t.Cleanup(func() { ghAvailable = origGhAvailable })
+
+	origPicker := listPicker
+	listPicker = func([]listEntry) (*listPickerSelection, error) {
+		return &listPickerSelection{Action: listActionDelete, Branch: branch}, nil
+	}
+	t.Cleanup(func() { listPicker = origPicker })
+
+	origStdin := stdinReader
+	stdinReader = strings.NewReader("y\n")
+	t.Cleanup(func() { stdinReader = origStdin })
+
+	rootCmd := NewRootCmd()
+	var errBuf bytes.Buffer
+	rootCmd.SetErr(&errBuf)
+	rootCmd.SetArgs([]string{"list"})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("interactive list delete failed: %v\nError output: %s", err, errBuf.String())
+	}
+	if _, err := exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "refs/heads/"+branch).CombinedOutput(); err == nil {
+		t.Fatal("interactive delete should remove the branch")
+	}
+}
+
 func TestListCmd_JSONDoesNotUseInteractivePicker(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test")
